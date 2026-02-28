@@ -1,5 +1,15 @@
 import { NextRequest, NextResponse } from "next/server";
 
+type ElevenLabsErrorPayload = {
+  detail?: {
+    type?: string;
+    code?: string;
+    message?: string;
+    status?: string;
+    request_id?: string;
+  };
+};
+
 export async function POST(request: NextRequest) {
   try {
     const { text } = await request.json();
@@ -16,7 +26,11 @@ export async function POST(request: NextRequest) {
       return NextResponse.json({ error: "ElevenLabs not configured" }, { status: 500 });
     }
 
-    // eleven_turbo_v2_5 = lowest latency, optimized for real-time streaming
+    // eleven_turbo_v2_5 = lowest latency (MASTER_CONTEXT requirement)
+    const body: Record<string, unknown> = {
+      text: text.trim(),
+      model_id: "eleven_turbo_v2_5",
+    };
     const elevenRes = await fetch(
       `https://api.elevenlabs.io/v1/text-to-speech/${voiceId}/stream`,
       {
@@ -26,25 +40,40 @@ export async function POST(request: NextRequest) {
           "Content-Type": "application/json",
           Accept: "audio/mpeg",
         },
-        body: JSON.stringify({
-          text: text.trim(),
-          model_id: "eleven_turbo_v2_5",
-          voice_settings: {
-            stability: 0.5,
-            similarity_boost: 0.8,
-            style: 0.3,
-            use_speaker_boost: true,
-          },
-          optimize_streaming_latency: 3,  // minimize time-to-first-audio
-        }),
+        body: JSON.stringify(body),
       }
     );
 
     if (!elevenRes.ok) {
       const errorText = await elevenRes.text();
+      let providerError: ElevenLabsErrorPayload["detail"];
+      try {
+        const parsed = JSON.parse(errorText) as ElevenLabsErrorPayload;
+        providerError = parsed.detail;
+      } catch {
+        providerError = undefined;
+      }
+
       console.error("ElevenLabs error:", elevenRes.status, errorText);
+      // 402 = Payment Required — can be quota, billing, or plan restriction (e.g. model not on free tier)
+      const isQuotaOrPayment = elevenRes.status === 402;
       return NextResponse.json(
-        { error: "ElevenLabs request failed", detail: errorText },
+        {
+          error: isQuotaOrPayment
+            ? "ElevenLabs quota or plan restriction"
+            : "ElevenLabs request failed",
+          code: isQuotaOrPayment ? "quota_or_payment" : undefined,
+          detail: providerError?.message ?? errorText,
+          provider: providerError
+            ? {
+                type: providerError.type,
+                code: providerError.code,
+                status: providerError.status,
+                requestId: providerError.request_id,
+              }
+            : undefined,
+          status: elevenRes.status,
+        },
         { status: elevenRes.status }
       );
     }

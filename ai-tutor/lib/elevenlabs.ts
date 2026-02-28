@@ -18,7 +18,57 @@ export async function speakText(text: string): Promise<void> {
   });
 
   if (!response.ok) {
-    throw new Error(`ElevenLabs API route returned ${response.status}`);
+    let message = `ElevenLabs API route returned ${response.status}`;
+    let detail: string | undefined;
+    let code: string | undefined;
+    let provider:
+      | {
+          type?: string;
+          code?: string;
+          status?: string;
+          requestId?: string;
+        }
+      | undefined;
+    try {
+      const body = await response.json() as {
+        code?: string;
+        detail?: string;
+        provider?: {
+          type?: string;
+          code?: string;
+          status?: string;
+          requestId?: string;
+        };
+      };
+      detail = body.detail;
+      code = body.code;
+      provider = body.provider;
+      if (body.code === "quota_or_payment" || response.status === 402) {
+        message = detail && detail.length < 200
+          ? `ElevenLabs 402: ${detail}`
+          : "ElevenLabs quota or plan restriction. Check elevenlabs.io/dashboard.";
+      }
+    } catch {
+      if (response.status === 402) {
+        message = "ElevenLabs 402 — quota or plan restriction. Check elevenlabs.io/dashboard.";
+      }
+    }
+    const err = new Error(message) as Error & {
+      detail?: string;
+      code?: string;
+      status?: number;
+      provider?: {
+        type?: string;
+        code?: string;
+        status?: string;
+        requestId?: string;
+      };
+    };
+    if (detail) err.detail = detail;
+    if (code) err.code = code;
+    err.status = response.status;
+    if (provider) err.provider = provider;
+    throw err;
   }
 
   // Collect full audio blob from the stream
