@@ -4,6 +4,7 @@ import { useState, useRef, useCallback, useEffect } from "react";
 import { Editor } from "tldraw";
 import WhiteboardCanvas from "@/components/WhiteboardCanvas";
 import AnnotationOverlay from "@/components/AnnotationOverlay";
+import { exportCanvasAsBase64 } from "@/lib/canvasExport";
 import { AnnotationBox, SessionState } from "@/lib/types";
 
 interface SessionWrapperProps {
@@ -46,6 +47,20 @@ export default function SessionWrapper({ courseMaterial }: SessionWrapperProps) 
     }
   };
 
+  // ── PHASE 3 TEST — export canvas as base64 (remove in Phase 6) ───
+  const testExportCanvas = async () => {
+    const editor = editorRef.current;
+    if (!editor) {
+      console.warn("No editor ref");
+      return;
+    }
+    const result = await exportCanvasAsBase64(editor, canvasContainerRef);
+    console.log("exportCanvasAsBase64 result:", result);
+    if (result) {
+      console.log("base64 length:", result.base64.length, "width:", result.width, "height:", result.height, "method:", result.method);
+    }
+  };
+
   return (
     <main className="relative w-full h-screen overflow-hidden bg-white">
 
@@ -57,8 +72,20 @@ export default function SessionWrapper({ courseMaterial }: SessionWrapperProps) 
       {/* Red annotation box layer */}
       <AnnotationOverlay annotation={annotation} />
 
-      {/* PHASE 1 TEST CONTROLS — delete in Phase 6 */}
-      <div className="absolute top-4 right-4 z-[100]">
+      {/* Annotation coords debug — always show when annotation is set (remove in Phase 6) */}
+      {annotation && (
+        <div className="absolute left-4 top-4 z-[100] bg-black/90 text-white text-xs p-3 rounded-lg font-mono space-y-1 min-w-[160px] shadow-xl border border-white/20">
+          <div className="text-yellow-400 font-bold">Annotation coords</div>
+          <div className="text-white/80 text-[10px] mb-1">Test annotation (fixed). Phase 2 will use real coords.</div>
+          <div>x: {annotation.x_pct.toFixed(1)}%</div>
+          <div>y: {annotation.y_pct.toFixed(1)}%</div>
+          <div>w: {annotation.width_pct.toFixed(1)}%</div>
+          <div>h: {annotation.height_pct.toFixed(1)}%</div>
+        </div>
+      )}
+
+      {/* PHASE 1 / 3 TEST CONTROLS — delete in Phase 6 */}
+      <div className="absolute top-4 right-4 z-[100] flex flex-col gap-2 items-end">
         <button
           onClick={testToggle}
           className={`px-4 py-2 rounded-lg font-bold text-white text-sm shadow-lg ${
@@ -66,6 +93,12 @@ export default function SessionWrapper({ courseMaterial }: SessionWrapperProps) 
           }`}
         >
           {isCanvasLocked ? "🔒 LOCKED — click to unlock" : "🔓 UNLOCKED — click to lock"}
+        </button>
+        <button
+          onClick={testExportCanvas}
+          className="px-4 py-2 rounded-lg font-bold text-white text-sm shadow-lg bg-slate-600"
+        >
+          Export canvas (console)
         </button>
       </div>
 

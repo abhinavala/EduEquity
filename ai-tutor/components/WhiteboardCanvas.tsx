@@ -2,6 +2,7 @@
 
 import { Tldraw, Editor } from "tldraw";
 import "tldraw/tldraw.css";
+import { DraggableStylePanel } from "./DraggableStylePanel";
 
 interface WhiteboardCanvasProps {
   isLocked: boolean;
@@ -12,7 +13,12 @@ export default function WhiteboardCanvas({ isLocked, onEditorReady }: Whiteboard
   return (
     <div className="relative w-full h-screen">
 
-      <Tldraw onMount={onEditorReady} />
+      <Tldraw
+        onMount={onEditorReady}
+        components={{
+          StylePanel: DraggableStylePanel,
+        }}
+      />
 
       {/*
         THE CANVAS LOCK:
