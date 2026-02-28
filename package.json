@@ -1,0 +1,10 @@
+{
+  "name": "edu-equity",
+  "private": true,
+  "scripts": {
+    "dev": "npm run dev --prefix ai-tutor",
+    "build": "npm run build --prefix ai-tutor",
+    "start": "npm run start --prefix ai-tutor",
+    "lint": "npm run lint --prefix ai-tutor"
+  }
+}
