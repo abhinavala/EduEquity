@@ -1,7 +1,7 @@
 "use client";
 
 import { createShapeId, Editor, getIndicesBetween, TLShapeId, toRichText } from "tldraw";
-import { VisualPlan } from "@/lib/types";
+import { VisualPlan, VisualPoint } from "@/lib/types";
 
 type StrokeSize = "s" | "m" | "l" | "xl";
 type StrokeColor =
@@ -17,6 +17,7 @@ type StrokeColor =
   | "light-green"
   | "light-red"
   | "grey";
+type StrokeDash = "draw" | "solid" | "dashed" | "dotted";
 
 interface SegmentConfig {
   x: number;
@@ -25,7 +26,7 @@ interface SegmentConfig {
   y2: number;
   color?: StrokeColor;
   size?: StrokeSize;
-  dash?: "draw" | "solid";
+  dash?: StrokeDash;
 }
 
 interface LabelConfig {
@@ -35,6 +36,17 @@ interface LabelConfig {
   width?: number;
   color?: StrokeColor;
   size?: StrokeSize;
+}
+
+interface BoxConfig {
+  x: number;
+  y: number;
+  w: number;
+  h: number;
+  color?: StrokeColor;
+  fill?: "solid" | "none";
+  opacity?: number;
+  geo?: "rectangle" | "ellipse";
 }
 
 function sleep(ms: number) {
@@ -135,7 +147,7 @@ function updateLabel(editor: Editor, id: TLShapeId, config: LabelConfig) {
   });
 }
 
-function createPoint(editor: Editor, x: number, y: number) {
+function createPoint(editor: Editor, x: number, y: number, color: StrokeColor = "red") {
   const id = createShapeId();
   editor.createShape({
     id,
@@ -146,13 +158,110 @@ function createPoint(editor: Editor, x: number, y: number) {
       w: 18,
       h: 18,
       geo: "ellipse",
-      color: "red",
+      color,
       fill: "solid",
       dash: "solid",
       size: "m",
     },
   });
   return id;
+}
+
+function createBox(editor: Editor, config: BoxConfig) {
+  const id = createShapeId();
+  editor.createShape({
+    id,
+    type: "geo",
+    x: config.x,
+    y: config.y,
+    opacity: config.opacity ?? 0.45,
+    props: {
+      w: config.w,
+      h: config.h,
+      geo: config.geo ?? "rectangle",
+      color: config.color ?? "blue",
+      fill: config.fill ?? "solid",
+      dash: "solid",
+      size: "m",
+    },
+  });
+  return id;
+}
+
+function updateBox(editor: Editor, id: TLShapeId, config: BoxConfig) {
+  editor.updateShape({
+    id,
+    type: "geo",
+    x: config.x,
+    y: config.y,
+    opacity: config.opacity ?? 0.45,
+    props: {
+      w: config.w,
+      h: config.h,
+      geo: config.geo ?? "rectangle",
+      color: config.color ?? "blue",
+      fill: config.fill ?? "solid",
+      dash: "solid",
+      size: "m",
+    },
+  });
+}
+
+function createPolyline(
+  editor: Editor,
+  points: Array<{ x: number; y: number }>,
+  config: Omit<SegmentConfig, "x" | "y" | "x2" | "y2">
+) {
+  if (points.length < 2) return null;
+
+  const indices = getIndicesBetween(null, null, points.length);
+  const origin = points[0];
+  const id = createShapeId();
+  editor.createShape({
+    id,
+    type: "line",
+    x: origin.x,
+    y: origin.y,
+    props: {
+      color: config.color ?? "black",
+      size: config.size ?? "m",
+      dash: config.dash ?? "draw",
+      points: Object.fromEntries(
+        points.map((point, index) => [
+          indices[index],
+          {
+            id: indices[index],
+            index: indices[index],
+            x: point.x - origin.x,
+            y: point.y - origin.y,
+          },
+        ])
+      ),
+    },
+  });
+
+  return id;
+}
+
+async function slideLabel(
+  editor: Editor,
+  id: TLShapeId,
+  from: { x: number; y: number },
+  to: { x: number; y: number },
+  config: Omit<LabelConfig, "x" | "y">,
+  shouldCancel: () => boolean
+) {
+  const frames = 8;
+  for (let frame = 0; frame <= frames; frame += 1) {
+    if (shouldCancel()) return;
+    const t = frame / frames;
+    updateLabel(editor, id, {
+      ...config,
+      x: from.x + (to.x - from.x) * t,
+      y: from.y + (to.y - from.y) * t,
+    });
+    await sleep(45);
+  }
 }
 
 function updatePoint(editor: Editor, id: TLShapeId, x: number, y: number) {
@@ -171,6 +280,94 @@ function updatePoint(editor: Editor, id: TLShapeId, x: number, y: number) {
       size: "m",
     },
   });
+}
+
+function normalizeColor(input?: string | null): StrokeColor {
+  const normalized = input?.trim().toLowerCase();
+  if (!normalized) return "blue";
+
+  const directMap: Record<string, StrokeColor> = {
+    black: "black",
+    dark: "black",
+    gray: "grey",
+    grey: "grey",
+    silver: "grey",
+    blue: "blue",
+    navy: "blue",
+    teal: "light-blue",
+    cyan: "light-blue",
+    green: "green",
+    lime: "light-green",
+    yellow: "yellow",
+    orange: "orange",
+    red: "red",
+    pink: "light-red",
+    magenta: "light-red",
+    purple: "violet",
+    violet: "violet",
+    lavender: "light-violet",
+  };
+
+  return directMap[normalized] ?? "blue";
+}
+
+function normalizeSize(input?: string | null): StrokeSize {
+  const normalized = input?.trim().toLowerCase();
+  if (!normalized) return "m";
+  if (normalized === "small" || normalized === "thin") return "s";
+  if (normalized === "large" || normalized === "thick") return "l";
+  if (normalized === "xl" || normalized === "extra-large" || normalized === "extra large") return "xl";
+  return normalized === "s" || normalized === "m" || normalized === "l" || normalized === "xl"
+    ? normalized
+    : "m";
+}
+
+function normalizeDash(input?: string | null): StrokeDash {
+  const normalized = input?.trim().toLowerCase();
+  if (!normalized) return "draw";
+  if (normalized === "solid") return "solid";
+  if (normalized === "dashed" || normalized === "dash") return "dashed";
+  if (normalized === "dotted" || normalized === "dot") return "dotted";
+  return "draw";
+}
+
+function clampPercent(value: number) {
+  return Math.max(0, Math.min(100, value));
+}
+
+function mapPointToRegion(point: VisualPoint, region: { x: number; y: number; w: number; h: number }) {
+  return {
+    x: region.x + (clampPercent(point.x) / 100) * region.w,
+    y: region.y + (clampPercent(point.y) / 100) * region.h,
+  };
+}
+
+function createArrow(editor: Editor, config: SegmentConfig) {
+  const mainId = createSegment(editor, config);
+  const angle = Math.atan2(config.y2 - config.y, config.x2 - config.x);
+  const headLength = 18;
+  const spread = Math.PI / 7;
+
+  createSegment(editor, {
+    x: config.x2,
+    y: config.y2,
+    x2: config.x2 - Math.cos(angle - spread) * headLength,
+    y2: config.y2 - Math.sin(angle - spread) * headLength,
+    color: config.color,
+    size: config.size,
+    dash: "solid",
+  });
+  createSegment(editor, {
+    x: config.x2,
+    y: config.y2,
+    x2: config.x2 - Math.cos(angle + spread) * headLength,
+    y2: config.y2 - Math.sin(angle + spread) * headLength,
+    color: config.color,
+    size: config.size,
+    dash: "solid",
+  });
+
+  return mainId;
 }
 
 function mapQuadraticPoint(
@@ -483,6 +680,415 @@ async function playConceptStepsDemo(
   });
 }
 
+async function playIntegrationByPartsDemo(
+  editor: Editor,
+  plan: VisualPlan,
+  shouldCancel: () => boolean
+) {
+  const viewport = editor.getViewportPageBounds();
+  const left = viewport.x + viewport.width * 0.16;
+  const top = viewport.y + viewport.height * 0.18;
+  const expressionWidth = Math.min(Math.max(viewport.width * 0.42, 420), 620);
+  const expressionText = plan.expression || "∫ x e^x dx";
+  const uPart = plan.uPart || "x";
+  const dvPart = plan.dvPart || "e^x dx";
+  const duPart = plan.duPart || "dx";
+  const vPart = plan.vPart || "e^x";
+  const assembledFormula = plan.assembledFormula || `${uPart}(${vPart}) − ∫ ${vPart}(${duPart})`;
+
+  createLabel(editor, {
+    x: left,
+    y: top - 48,
+    width: expressionWidth + 80,
+    color: "blue",
+    size: "m",
+    text: plan.conceptLabel || "Step 1: Identify u and dv",
+  });
+
+  const expressionId = createLabel(editor, {
+    x: left,
+    y: top + 8,
+    width: expressionWidth,
+    color: "black",
+    size: "l",
+    text: expressionText,
+  });
+
+  await sleep(350);
+  if (shouldCancel()) return;
+
+  const uBoxId = createBox(editor, {
+    x: left + 44,
+    y: top + 6,
+    w: Math.max(62, uPart.length * 17),
+    h: 44,
+    color: "blue",
+  });
+  const dvBoxId = createBox(editor, {
+    x: left + 138,
+    y: top + 6,
+    w: Math.max(118, dvPart.length * 14),
+    h: 44,
+    color: "orange",
+  });
+  createLabel(editor, {
+    x: left + 44,
+    y: top + 58,
+    width: 100,
+    color: "blue",
+    size: "s",
+    text: `u = ${uPart}`,
+  });
+  createLabel(editor, {
+    x: left + 148,
+    y: top + 58,
+    width: 180,
+    color: "orange",
+    size: "s",
+    text: `dv = ${dvPart}`,
+  });
+
+  await sleep(2000);
+  if (shouldCancel()) return;
+
+  createLabel(editor, {
+    x: left,
+    y: top + 118,
+    width: expressionWidth + 80,
+    color: "blue",
+    size: "m",
+    text: plan.secondaryLabel || "Step 2: Differentiate u, integrate dv",
+  });
+
+  createSegment(editor, {
+    x: left + 92,
+    y: top + 88,
+    x2: left + 92,
+    y2: top + 156,
+    color: "blue",
+    size: "m",
+    dash: "solid",
+  });
+  createSegment(editor, {
+    x: left + 228,
+    y: top + 88,
+    x2: left + 228,
+    y2: top + 156,
+    color: "orange",
+    size: "m",
+    dash: "solid",
+  });
+
+  createLabel(editor, {
+    x: left + 52,
+    y: top + 168,
+    width: 120,
+    color: "blue",
+    size: "m",
+    text: `${uPart} → ${duPart}`,
+  });
+  createLabel(editor, {
+    x: left + 188,
+    y: top + 168,
+    width: 160,
+    color: "orange",
+    size: "m",
+    text: `∫dv → ${vPart}`,
+  });
+
+  await sleep(2000);
+  if (shouldCancel()) return;
+
+  createLabel(editor, {
+    x: left,
+    y: top + 242,
+    width: expressionWidth + 90,
+    color: "blue",
+    size: "m",
+    text: "Step 3: Build uv − ∫v du",
+  });
+
+  const firstPieceId = createLabel(editor, {
+    x: left + 20,
+    y: top + 306,
+    width: 110,
+    color: "blue",
+    size: "l",
+    text: `${uPart}${vPart}`,
+  });
+  await slideLabel(
+    editor,
+    firstPieceId,
+    { x: left + 20, y: top + 306 },
+    { x: left + 32, y: top + 286 },
+    {
+      width: 120,
+      color: "blue",
+      size: "l",
+      text: `${uPart}${vPart}`,
+    },
+    shouldCancel
+  );
+
+  if (shouldCancel()) return;
+
+  const minusPieceId = createLabel(editor, {
+    x: left + 184,
+    y: top + 306,
+    width: 80,
+    color: "black",
+    size: "l",
+    text: "−",
+  });
+  await slideLabel(
+    editor,
+    minusPieceId,
+    { x: left + 184, y: top + 306 },
+    { x: left + 172, y: top + 286 },
+    {
+      width: 80,
+      color: "black",
+      size: "l",
+      text: "−",
+    },
+    shouldCancel
+  );
+
+  if (shouldCancel()) return;
+
+  const integralPieceId = createLabel(editor, {
+    x: left + 252,
+    y: top + 306,
+    width: 280,
+    color: "red",
+    size: "l",
+    text: `∫ ${vPart} ${duPart}`,
+  });
+  await slideLabel(
+    editor,
+    integralPieceId,
+    { x: left + 252, y: top + 306 },
+    { x: left + 214, y: top + 286 },
+    {
+      width: 280,
+      color: "red",
+      size: "l",
+      text: `∫ ${vPart} ${duPart}`,
+    },
+    shouldCancel
+  );
+
+  if (shouldCancel()) return;
+
+  createLabel(editor, {
+    x: left + 24,
+    y: top + 356,
+    width: expressionWidth + 100,
+    color: "green",
+    size: "m",
+    text: assembledFormula,
+  });
+
+  updateBox(editor, uBoxId, {
+    x: left + 44,
+    y: top + 6,
+    w: Math.max(62, uPart.length * 17),
+    h: 44,
+    color: "blue",
+  });
+  updateBox(editor, dvBoxId, {
+    x: left + 138,
+    y: top + 6,
+    w: Math.max(118, dvPart.length * 14),
+    h: 44,
+    color: "orange",
+  });
+
+  await sleep(400);
+  if (shouldCancel()) return;
+
+  createLabel(editor, {
+    x: left,
+    y: top + 412,
+    width: expressionWidth + 120,
+    color: "violet",
+    size: "m",
+    text: plan.insightLabel || "Now you try it: which part would you call u?",
+  });
+
+  updateLabel(editor, expressionId, {
+    x: left,
+    y: top + 8,
+    width: expressionWidth,
+    color: "black",
+    size: "l",
+    text: expressionText,
+  });
+}
+
+async function playStructuredDiagram(
+  editor: Editor,
+  plan: VisualPlan,
+  shouldCancel: () => boolean
+) {
+  const viewport = editor.getViewportPageBounds();
+  const region = {
+    x: viewport.x + viewport.width * 0.12,
+    y: viewport.y + viewport.height * 0.18,
+    w: Math.min(Math.max(viewport.width * 0.7, 560), 980),
+    h: Math.min(Math.max(viewport.height * 0.58, 360), 620),
+  };
+
+  createLabel(editor, {
+    x: region.x - 8,
+    y: region.y - 52,
+    width: region.w + 24,
+    color: "blue",
+    size: "m",
+    text: plan.expression || "Visual explanation",
+  });
+
+  if (plan.promptSummary?.trim()) {
+    createLabel(editor, {
+      x: region.x - 8,
+      y: region.y - 18,
+      width: region.w + 40,
+      color: "grey",
+      size: "s",
+      text: plan.promptSummary,
+    });
+  }
+
+  const elements = plan.elements ?? [];
+  for (const element of elements) {
+    if (shouldCancel()) return;
+
+    const color = normalizeColor(element.color);
+    const size = normalizeSize(element.size);
+    const dash = normalizeDash(element.dash);
+    const fill = element.fill?.trim().toLowerCase() === "none" ? "none" : "solid";
+    const basePoint = mapPointToRegion({ x: element.x, y: element.y }, region);
+
+    if (element.kind === "text" && element.text?.trim()) {
+      createLabel(editor, {
+        x: basePoint.x,
+        y: basePoint.y,
+        width: element.w ? (clampPercent(element.w) / 100) * region.w : 220,
+        color,
+        size,
+        text: element.text,
+      });
+    }
+
+    if (element.kind === "box") {
+      createBox(editor, {
+        x: basePoint.x,
+        y: basePoint.y,
+        w: Math.max(60, ((element.w ?? 18) / 100) * region.w),
+        h: Math.max(48, ((element.h ?? 12) / 100) * region.h),
+        color,
+        fill,
+        opacity: fill === "solid" ? 0.28 : 1,
+        geo: "rectangle",
+      });
+      if (element.label?.trim()) {
+        createLabel(editor, {
+          x: basePoint.x + 10,
+          y: basePoint.y + 10,
+          width: Math.max(80, (((element.w ?? 18) / 100) * region.w) - 20),
+          color,
+          size,
+          text: element.label,
+        });
+      }
+    }
+
+    if (element.kind === "ellipse") {
+      createBox(editor, {
+        x: basePoint.x,
+        y: basePoint.y,
+        w: Math.max(60, ((element.w ?? 18) / 100) * region.w),
+        h: Math.max(48, ((element.h ?? 12) / 100) * region.h),
+        color,
+        fill,
+        opacity: fill === "solid" ? 0.28 : 1,
+        geo: "ellipse",
+      });
+      if (element.label?.trim()) {
+        createLabel(editor, {
+          x: basePoint.x + 10,
+          y: basePoint.y + 12,
+          width: Math.max(80, (((element.w ?? 18) / 100) * region.w) - 20),
+          color,
+          size,
+          text: element.label,
+        });
+      }
+    }
+
+    if (element.kind === "line" && typeof element.x2 === "number" && typeof element.y2 === "number") {
+      const endPoint = mapPointToRegion({ x: element.x2, y: element.y2 }, region);
+      createSegment(editor, {
+        x: basePoint.x,
+        y: basePoint.y,
+        x2: endPoint.x,
+        y2: endPoint.y,
+        color,
+        size,
+        dash,
+      });
+    }
+
+    if (element.kind === "arrow" && typeof element.x2 === "number" && typeof element.y2 === "number") {
+      const endPoint = mapPointToRegion({ x: element.x2, y: element.y2 }, region);
+      createArrow(editor, {
+        x: basePoint.x,
+        y: basePoint.y,
+        x2: endPoint.x,
+        y2: endPoint.y,
+        color,
+        size,
+        dash,
+      });
+    }
+
+    if (element.kind === "polyline" && element.points && element.points.length >= 2) {
+      createPolyline(
+        editor,
+        element.points.map((point) => mapPointToRegion(point, region)),
+        { color, size, dash }
+      );
+    }
+
+    if (element.kind === "point") {
+      createPoint(editor, basePoint.x - 9, basePoint.y - 9, color);
+      if (element.label?.trim()) {
+        createLabel(editor, {
+          x: basePoint.x + 12,
+          y: basePoint.y - 16,
+          width: 140,
+          color,
+          size: "s",
+          text: element.label,
+        });
+      }
+    }
+
+    await sleep(140);
+  }
+
+  if (!shouldCancel() && plan.insightLabel?.trim()) {
+    createLabel(editor, {
+      x: region.x,
+      y: region.y + region.h + 18,
+      width: region.w + 32,
+      color: "green",
+      size: "m",
+      text: plan.insightLabel,
+    });
+  }
+}
+
 export async function playVisualPlan(
   editor: Editor,
   plan: VisualPlan,
@@ -495,5 +1101,15 @@ export async function playVisualPlan(
 
   if (plan.kind === "concept_steps") {
     await playConceptStepsDemo(editor, plan, shouldCancel);
+    return;
+  }
+
+  if (plan.kind === "integration_by_parts_demo") {
+    await playIntegrationByPartsDemo(editor, plan, shouldCancel);
+    return;
+  }
+
+  if (plan.kind === "structured_diagram") {
+    await playStructuredDiagram(editor, plan, shouldCancel);
   }
 }

@@ -1,19 +1,14 @@
 "use client";
 
 import { useEffect, useMemo, useRef, useState } from "react";
-import { ConversationTurn, ProgressLetter, SessionMetrics } from "@/lib/types";
+import { buildBoardPagesForFile } from "@/lib/boardMaterialAssets";
 import { DEFAULT_TUTOR_LANGUAGE, TUTOR_LANGUAGES, TutorLanguageCode } from "@/lib/tutorLanguages";
+import { BoardPageAsset, ConversationTurn, ProgressLetter, SessionMetrics, UploadedMaterialEntry } from "@/lib/types";
 import { getUiCopy } from "@/lib/uiTranslations";
-
-interface UploadedMaterialEntry {
-  id: string;
-  name: string;
-  mimeType: string;
-  text: string;
-}
 
 interface CourseMaterialSidebarProps {
   onCourseMaterialChange: (courseMaterial: string) => void;
+  onMaterialEntriesChange: (entries: UploadedMaterialEntry[]) => void;
   selectedLanguageCode: TutorLanguageCode;
   onLanguageChange: (languageCode: TutorLanguageCode) => void;
   conversationHistory: ConversationTurn[];
@@ -35,8 +30,32 @@ function fileToBase64(file: File): Promise<string> {
 
 function buildCourseMaterial(entries: UploadedMaterialEntry[]) {
   return entries
+    .filter((entry) => entry.text.trim().length > 0)
     .map((entry) => `=== ${entry.name} ===\n${entry.text}`)
     .join("\n\n");
+}
+
+async function extractTextFromRenderedPages(boardPages: BoardPageAsset[]) {
+  const extractedSections: string[] = [];
+  const pagesToRead = boardPages.slice(0, 10);
+
+  for (const page of pagesToRead) {
+    const response = await fetch("/api/extract-material", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ file: page.dataUrl, mimeType: page.mimeType }),
+    });
+
+    if (!response.ok) continue;
+
+    const data = (await response.json()) as { text?: string };
+    const text = data.text?.trim() ?? "";
+    if (text) {
+      extractedSections.push(text);
+    }
+  }
+
+  return extractedSections.join("\n\n").trim();
 }
 
 function formatDuration(elapsedMs: number, formatMinutes: (count: number) => string) {
@@ -46,6 +65,7 @@ function formatDuration(elapsedMs: number, formatMinutes: (count: number) => str
 
 export default function CourseMaterialSidebar({
   onCourseMaterialChange,
+  onMaterialEntriesChange,
   selectedLanguageCode,
   onLanguageChange,
   conversationHistory,
@@ -67,6 +87,10 @@ export default function CourseMaterialSidebar({
   useEffect(() => {
     onCourseMaterialChange(courseMaterial);
   }, [courseMaterial, onCourseMaterialChange]);
+
+  useEffect(() => {
+    onMaterialEntriesChange(entries);
+  }, [entries, onMaterialEntriesChange]);
 
   const activeLanguage =
     TUTOR_LANGUAGES.find((language) => language.code === selectedLanguageCode) ?? DEFAULT_TUTOR_LANGUAGE;
@@ -143,22 +167,25 @@ export default function CourseMaterialSidebar({
 
         try {
           const fileData = await fileToBase64(file);
+          const boardPages = await buildBoardPagesForFile(file, file.type.startsWith("image/") ? fileData : undefined);
+          let text = "";
           const response = await fetch("/api/extract-material", {
             method: "POST",
             headers: { "Content-Type": "application/json" },
             body: JSON.stringify({ file: fileData, mimeType: file.type }),
           });
 
-          if (!response.ok) {
-            const data = await response.json().catch(() => ({}));
-            const message = (data as { error?: string }).error || `Upload failed (${response.status})`;
-            throw new Error(message);
+          if (response.ok) {
+            const data = (await response.json()) as { text?: string };
+            text = data.text?.trim() ?? "";
           }
 
-          const data = (await response.json()) as { text?: string };
-          const text = data.text?.trim() ?? "";
+          if (!text && boardPages.length > 0) {
+            setProgressLabel(`Reading visible pages for ${file.name}`);
+            text = await extractTextFromRenderedPages(boardPages);
+          }
 
-          if (!text) {
+          if (!text && boardPages.length === 0) {
             throw new Error(ui.noReadableTextFound);
           }
 
@@ -167,6 +194,8 @@ export default function CourseMaterialSidebar({
             name: file.name,
             mimeType: file.type,
             text,
+            boardPages,
+            displayOnBoard: boardPages.length > 0,
           });
         } catch (uploadError) {
           const detail = uploadError instanceof Error ? uploadError.message : "Extraction failed";
@@ -190,6 +219,16 @@ export default function CourseMaterialSidebar({
 
   const handleRemoveEntry = (id: string) => {
     setEntries((current) => current.filter((entry) => entry.id !== id));
+  };
+
+  const handleToggleBoardDisplay = (id: string) => {
+    setEntries((current) =>
+      current.map((entry) =>
+        entry.id === id && entry.boardPages.length > 0
+          ? { ...entry, displayOnBoard: !entry.displayOnBoard }
+          : entry
+      )
+    );
   };
 
   useEffect(() => {
@@ -375,18 +414,38 @@ export default function CourseMaterialSidebar({
                             {entry.mimeType === "application/pdf" ? "PDF" : "Image"}
                           </p>
                         </div>
-                        <button
-                          type="button"
-                          onClick={() => handleRemoveEntry(entry.id)}
-                          className="rounded-lg px-2 py-1 text-xs font-medium text-slate-500 transition hover:bg-slate-200 hover:text-slate-800"
-                          aria-label={`Remove ${entry.name}`}
-                        >
-                          {ui.remove}
-                        </button>
+                        <div className="flex items-center gap-2">
+                          {entry.boardPages.length > 0 && (
+                            <button
+                              type="button"
+                              onClick={() => handleToggleBoardDisplay(entry.id)}
+                              className={`rounded-full px-2.5 py-1 text-[11px] font-semibold transition ${
+                                entry.displayOnBoard
+                                  ? "bg-blue-100 text-blue-700 hover:bg-blue-200"
+                                  : "bg-slate-200 text-slate-700 hover:bg-slate-300"
+                              }`}
+                              aria-pressed={entry.displayOnBoard}
+                              aria-label={`${entry.displayOnBoard ? ui.showingOnBoard : ui.contextOnly} — ${entry.name}`}
+                            >
+                              {entry.displayOnBoard ? ui.showingOnBoard : ui.contextOnly}
+                            </button>
+                          )}
+                          <button
+                            type="button"
+                            onClick={() => handleRemoveEntry(entry.id)}
+                            className="rounded-lg px-2 py-1 text-xs font-medium text-slate-500 transition hover:bg-slate-200 hover:text-slate-800"
+                            aria-label={`Remove ${entry.name}`}
+                          >
+                            {ui.remove}
+                          </button>
+                        </div>
                       </div>
 
+                      <p className="mt-2 text-[11px] font-medium text-slate-500">
+                        {entry.displayOnBoard ? ui.courseFileModeDisplayed : ui.courseFileModeContextOnly}
+                      </p>
                       <p className="mt-2 line-clamp-3 text-xs leading-5 text-slate-600">
-                        {entry.text}
+                        {entry.text || ui.noReadableTextFound}
                       </p>
                     </div>
                   ))

@@ -53,6 +53,10 @@ export interface UiCopy {
   pdfNextStepsTitle: string;
   practiceProblemHistoryPrefix: string;
   annotationHistoryNote: string;
+  showingOnBoard: string;
+  contextOnly: string;
+  courseFileModeDisplayed: string;
+  courseFileModeContextOnly: string;
 }
 
 function pluralize(count: number, one: string, many: string) {
@@ -113,6 +117,10 @@ const EN: UiCopy = {
   pdfNextStepsTitle: "Suggested Next Steps",
   practiceProblemHistoryPrefix: "Practice problem placed on canvas",
   annotationHistoryNote: "The tutor highlighted a specific part of the student's work on the canvas.",
+  showingOnBoard: "On board",
+  contextOnly: "Context only",
+  courseFileModeDisplayed: "This file is visible on the whiteboard and also used as tutor context.",
+  courseFileModeContextOnly: "This file is kept as tutor context only and is hidden from the whiteboard.",
 };
 
 const ES: UiCopy = {
@@ -175,6 +183,10 @@ const ES: UiCopy = {
   pdfNextStepsTitle: "Próximos pasos sugeridos",
   practiceProblemHistoryPrefix: "Problema de práctica colocado en el lienzo",
   annotationHistoryNote: "El tutor destacó una parte específica del trabajo del estudiante en el lienzo.",
+  showingOnBoard: "En el tablero",
+  contextOnly: "Solo contexto",
+  courseFileModeDisplayed: "Este archivo aparece en la pizarra y también se usa como contexto del tutor.",
+  courseFileModeContextOnly: "Este archivo se conserva solo como contexto del tutor y no aparece en la pizarra.",
 };
 
 const VI: UiCopy = {
@@ -237,6 +249,10 @@ const VI: UiCopy = {
   pdfNextStepsTitle: "Bước tiếp theo được đề xuất",
   practiceProblemHistoryPrefix: "Bài tập luyện tập đã được đặt lên bảng",
   annotationHistoryNote: "Gia sư đã tô nổi bật một phần cụ thể trong bài làm của học sinh trên bảng.",
+  showingOnBoard: "Hiện trên bảng",
+  contextOnly: "Chỉ làm ngữ cảnh",
+  courseFileModeDisplayed: "Tệp này xuất hiện trên bảng trắng và cũng được dùng làm ngữ cảnh cho gia sư.",
+  courseFileModeContextOnly: "Tệp này chỉ được giữ làm ngữ cảnh cho gia sư và không hiện trên bảng trắng.",
 };
 
 const FIL: UiCopy = {
@@ -299,6 +315,10 @@ const FIL: UiCopy = {
   pdfNextStepsTitle: "Mga susunod na hakbang",
   practiceProblemHistoryPrefix: "Inilagay ang practice problem sa canvas",
   annotationHistoryNote: "Nag-highlight ang tutor ng isang tiyak na bahagi ng gawa ng estudyante sa canvas.",
+  showingOnBoard: "Nasa board",
+  contextOnly: "Context lang",
+  courseFileModeDisplayed: "Ipinapakita ang file na ito sa whiteboard at ginagamit din bilang context ng tutor.",
+  courseFileModeContextOnly: "Pinananatili ang file na ito bilang context lang ng tutor at hindi ipinapakita sa whiteboard.",
 };
 
 const AR: UiCopy = {
@@ -361,6 +381,10 @@ const AR: UiCopy = {
   pdfNextStepsTitle: "الخطوات التالية المقترحة",
   practiceProblemHistoryPrefix: "تم وضع مسألة تدريبية على اللوحة",
   annotationHistoryNote: "قام المعلم بتمييز جزء محدد من عمل الطالب على اللوحة.",
+  showingOnBoard: "ظاهر على اللوحة",
+  contextOnly: "سياق فقط",
+  courseFileModeDisplayed: "هذا الملف ظاهر على اللوحة البيضاء ويُستخدم أيضًا كسياق للمعلم.",
+  courseFileModeContextOnly: "يتم الاحتفاظ بهذا الملف كسياق للمعلم فقط وهو مخفي من اللوحة البيضاء.",
 };
 
 const FR: UiCopy = {
@@ -423,6 +447,10 @@ const FR: UiCopy = {
   pdfNextStepsTitle: "Prochaines étapes suggérées",
   practiceProblemHistoryPrefix: "Exercice déposé sur le tableau",
   annotationHistoryNote: "Le tuteur a mis en évidence une partie précise du travail de l'élève sur le tableau.",
+  showingOnBoard: "Sur le tableau",
+  contextOnly: "Contexte seul",
+  courseFileModeDisplayed: "Ce fichier est visible sur le tableau blanc et sert aussi de contexte au tuteur.",
+  courseFileModeContextOnly: "Ce fichier est conservé uniquement comme contexte pour le tuteur et reste masqué sur le tableau blanc.",
 };
 
 const PT: UiCopy = {
@@ -485,6 +513,10 @@ const PT: UiCopy = {
   pdfNextStepsTitle: "Próximos passos sugeridos",
   practiceProblemHistoryPrefix: "Problema de prática colocado no quadro",
   annotationHistoryNote: "O tutor destacou uma parte específica do trabalho do aluno no quadro.",
+  showingOnBoard: "No quadro",
+  contextOnly: "Só contexto",
+  courseFileModeDisplayed: "Este arquivo fica visível no quadro branco e também é usado como contexto do tutor.",
+  courseFileModeContextOnly: "Este arquivo é mantido apenas como contexto do tutor e fica oculto no quadro branco.",
 };
 
 const HI: UiCopy = {
@@ -547,6 +579,10 @@ const HI: UiCopy = {
   pdfNextStepsTitle: "अगले सुझाए गए कदम",
   practiceProblemHistoryPrefix: "अभ्यास प्रश्न बोर्ड पर रखा गया",
   annotationHistoryNote: "ट्यूटर ने बोर्ड पर विद्यार्थी के कार्य के एक खास हिस्से को चिह्नित किया।",
+  showingOnBoard: "बोर्ड पर",
+  contextOnly: "सिर्फ संदर्भ",
+  courseFileModeDisplayed: "यह फ़ाइल व्हाइटबोर्ड पर दिखाई देती है और ट्यूटर संदर्भ के रूप में भी उपयोग होती है।",
+  courseFileModeContextOnly: "यह फ़ाइल केवल ट्यूटर संदर्भ के लिए रखी जाती है और व्हाइटबोर्ड पर नहीं दिखाई जाती।",
 };
 
 const ZH: UiCopy = {
@@ -607,6 +643,10 @@ const ZH: UiCopy = {
   pdfNextStepsTitle: "建议的下一步",
   practiceProblemHistoryPrefix: "练习题已放到画布上",
   annotationHistoryNote: "导师在画布上高亮了学生作业中的一个具体部分。",
+  showingOnBoard: "显示在白板上",
+  contextOnly: "仅作上下文",
+  courseFileModeDisplayed: "该文件会显示在白板上，同时也会作为导师回答时的上下文。",
+  courseFileModeContextOnly: "该文件仅保留为导师上下文，不会显示在白板上。",
 };
 
 const KO: UiCopy = {
@@ -669,6 +709,10 @@ const KO: UiCopy = {
   pdfNextStepsTitle: "권장 다음 단계",
   practiceProblemHistoryPrefix: "연습 문제가 캔버스에 추가되었습니다",
   annotationHistoryNote: "튜터가 캔버스에서 학생 작업의 특정 부분을 강조했습니다.",
+  showingOnBoard: "보드에 표시",
+  contextOnly: "문맥만 사용",
+  courseFileModeDisplayed: "이 파일은 화이트보드에 표시되고 튜터 문맥으로도 사용됩니다.",
+  courseFileModeContextOnly: "이 파일은 튜터 문맥으로만 유지되며 화이트보드에는 표시되지 않습니다.",
 };
 
 const UI_COPY: Record<TutorLanguageCode, UiCopy> = {

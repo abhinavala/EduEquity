@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useState, useRef, useCallback } from "react";
-import { Editor, createShapeId, toRichText } from "tldraw";
+import { AssetRecordType, Editor, TLAssetId, TLShapeId, createShapeId, getHashForString, toRichText } from "tldraw";
 import WhiteboardCanvas from "@/components/WhiteboardCanvas";
 import AnnotationOverlay from "@/components/AnnotationOverlay";
 import CourseMaterialSidebar from "@/components/CourseMaterialSidebar";
@@ -9,7 +9,14 @@ import VoiceController from "@/components/VoiceController";
 import { CanvasCaptureArea, exportCanvasAsBase64 } from "@/lib/canvasExport";
 import { refineAnnotationForCanvas } from "@/lib/annotationRefinement";
 import { speakText, speakTextFallback } from "@/lib/elevenlabs";
-import { AnnotationBox, ClaudeResponse, ConversationTurn, SessionMetrics, SessionState } from "@/lib/types";
+import {
+  AnnotationBox,
+  ClaudeResponse,
+  ConversationTurn,
+  SessionMetrics,
+  SessionState,
+  UploadedMaterialEntry,
+} from "@/lib/types";
 import { DEFAULT_TUTOR_LANGUAGE, getTutorLanguage, TutorLanguageCode } from "@/lib/tutorLanguages";
 import { getUiCopy } from "@/lib/uiTranslations";
 import { playVisualPlan } from "@/lib/whiteboardVisuals";
@@ -22,6 +29,11 @@ interface ActiveAnnotation {
   box: AnnotationBox;
   captureArea?: CanvasCaptureArea;
   label?: string | null;
+}
+
+interface InsertedBoardMaterial {
+  shapeIds: TLShapeId[];
+  assetIds: TLAssetId[];
 }
 
 function insertProblem(editor: Editor, text: string) {
@@ -64,6 +76,82 @@ function buildAssistantHistoryEntry(response: ClaudeResponse, languageCode: Tuto
   return parts.join("\n");
 }
 
+function buildAssetId(entryId: string, pageId: string, dataUrl: string) {
+  return AssetRecordType.createId(getHashForString(`${entryId}:${pageId}:${dataUrl}`));
+}
+
+function insertBoardMaterialEntry(
+  editor: Editor,
+  entry: UploadedMaterialEntry,
+  startY: number
+): { inserted: InsertedBoardMaterial; nextY: number } {
+  const viewport = editor.getViewportPageBounds();
+  const maxWidth = Math.min(Math.max(viewport.width * 0.58, 520), 860);
+  const startX = viewport.minX + 72;
+  let nextY = startY;
+  const shapeIds: TLShapeId[] = [];
+  const assetIds: TLAssetId[] = [];
+  const assetsToCreate: Array<Parameters<Editor["createAssets"]>[0][number]> = [];
+  const shapesToCreate: Array<Parameters<Editor["createShapes"]>[0][number]> = [];
+
+  for (const page of entry.boardPages) {
+    const assetId = buildAssetId(entry.id, page.id, page.dataUrl);
+    const shapeId = createShapeId();
+    const scale = Math.min(1, maxWidth / Math.max(page.width, 1));
+    const shapeWidth = Math.max(260, page.width * scale);
+    const shapeHeight = Math.max(320, page.height * scale);
+
+    assetIds.push(assetId);
+    shapeIds.push(shapeId);
+    assetsToCreate.push({
+      id: assetId,
+      typeName: "asset" as const,
+      type: "image" as const,
+      props: {
+        name: page.name,
+        src: page.dataUrl,
+        w: page.width,
+        h: page.height,
+        fileSize: page.fileSize,
+        mimeType: page.mimeType,
+        isAnimated: false,
+      },
+      meta: {},
+    });
+    shapesToCreate.push({
+      id: shapeId,
+      type: "image" as const,
+      x: startX,
+      y: nextY,
+      opacity: 1,
+      props: {
+        assetId,
+        w: shapeWidth,
+        h: shapeHeight,
+      },
+    });
+
+    nextY += shapeHeight + 28;
+  }
+
+  editor.run(() => {
+    const missingAssets = assetsToCreate.filter((asset) => !editor.getAsset(asset.id));
+    if (missingAssets.length > 0) {
+      editor.createAssets(missingAssets);
+    }
+
+    if (shapesToCreate.length > 0 && editor.canCreateShapes(shapesToCreate)) {
+      editor.createShapes(shapesToCreate);
+      editor.sendToBack(shapeIds);
+    }
+  });
+
+  return {
+    inserted: { shapeIds, assetIds },
+    nextY: nextY + 24,
+  };
+}
+
 export default function SessionWrapper({ initialCourseMaterial = "" }: SessionWrapperProps) {
   const [sessionState, setSessionState] = useState<SessionState>("idle");
   const [annotation, setAnnotation] = useState<ActiveAnnotation | null>(null);
@@ -72,6 +160,8 @@ export default function SessionWrapper({ initialCourseMaterial = "" }: SessionWr
   const [annotationCount, setAnnotationCount] = useState(0);
   const [practiceProblemCount, setPracticeProblemCount] = useState(0);
   const [visualAidCount, setVisualAidCount] = useState(0);
+  const [editor, setEditor] = useState<Editor | null>(null);
+  const [uploadedMaterials, setUploadedMaterials] = useState<UploadedMaterialEntry[]>([]);
   const [selectedLanguageCode, setSelectedLanguageCode] = useState<TutorLanguageCode>(
     () => {
       if (typeof window === "undefined") return DEFAULT_TUTOR_LANGUAGE.code;
@@ -85,6 +175,8 @@ export default function SessionWrapper({ initialCourseMaterial = "" }: SessionWr
   const conversationRef = useRef<ConversationTurn[]>([]);
   const sessionStartedAtRef = useRef(Date.now());
   const visualAnimationTokenRef = useRef(0);
+  const insertedBoardMaterialsRef = useRef<Map<string, InsertedBoardMaterial>>(new Map());
+  const boardInsertionCursorRef = useRef<number | null>(null);
   const selectedLanguage = getTutorLanguage(selectedLanguageCode);
   const ui = getUiCopy(selectedLanguageCode);
 
@@ -112,11 +204,58 @@ export default function SessionWrapper({ initialCourseMaterial = "" }: SessionWr
 
   const handleEditorReady = useCallback((editor: Editor) => {
     editorRef.current = editor;
+    setEditor(editor);
   }, []);
 
   const handleCourseMaterialChange = useCallback((courseMaterial: string) => {
     courseMaterialRef.current = courseMaterial;
   }, []);
+
+  const handleMaterialEntriesChange = useCallback((entries: UploadedMaterialEntry[]) => {
+    setUploadedMaterials(entries);
+  }, []);
+
+  useEffect(() => {
+    if (!editor) return;
+
+    const displayedEntryIds = new Set(
+      uploadedMaterials.filter((entry) => entry.displayOnBoard).map((entry) => entry.id)
+    );
+    for (const [entryId, inserted] of insertedBoardMaterialsRef.current.entries()) {
+      if (displayedEntryIds.has(entryId)) continue;
+
+      if (inserted.shapeIds.length > 0) {
+        editor.deleteShapes(inserted.shapeIds);
+      }
+
+      if (inserted.assetIds.length > 0) {
+        editor.deleteAssets(inserted.assetIds);
+      }
+
+      insertedBoardMaterialsRef.current.delete(entryId);
+    }
+
+    if (insertedBoardMaterialsRef.current.size === 0) {
+      boardInsertionCursorRef.current = null;
+    }
+
+    let nextY = boardInsertionCursorRef.current ?? editor.getViewportPageBounds().minY + 104;
+    for (const entry of uploadedMaterials) {
+      if (
+        insertedBoardMaterialsRef.current.has(entry.id) ||
+        !entry.displayOnBoard ||
+        entry.boardPages.length === 0
+      ) {
+        continue;
+      }
+
+      const result = insertBoardMaterialEntry(editor, entry, nextY);
+      insertedBoardMaterialsRef.current.set(entry.id, result.inserted);
+      nextY = result.nextY;
+    }
+
+    boardInsertionCursorRef.current = nextY;
+  }, [editor, uploadedMaterials]);
 
   const handleTranscript = useCallback(
     async (transcript: string) => {
@@ -229,6 +368,7 @@ export default function SessionWrapper({ initialCourseMaterial = "" }: SessionWr
 
       <CourseMaterialSidebar
         onCourseMaterialChange={handleCourseMaterialChange}
+        onMaterialEntriesChange={handleMaterialEntriesChange}
         selectedLanguageCode={selectedLanguageCode}
         onLanguageChange={setSelectedLanguageCode}
         conversationHistory={conversationHistory}

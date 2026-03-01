@@ -10,12 +10,41 @@ export interface AnnotationBox {
 }
 
 export interface VisualPlan {
-  kind: "parabola_tangent_demo" | "concept_steps";
+  kind: "parabola_tangent_demo" | "concept_steps" | "integration_by_parts_demo" | "structured_diagram";
   expression: string;
   conceptLabel?: string | null;
   secondaryLabel?: string | null;
   tangentLabel?: string | null;
   insightLabel?: string | null;
+  uPart?: string | null;
+  dvPart?: string | null;
+  duPart?: string | null;
+  vPart?: string | null;
+  assembledFormula?: string | null;
+  promptSummary?: string | null;
+  elements?: VisualElement[] | null;
+}
+
+export interface VisualPoint {
+  x: number;
+  y: number;
+}
+
+export interface VisualElement {
+  kind: "text" | "box" | "ellipse" | "line" | "arrow" | "polyline" | "point";
+  x: number;
+  y: number;
+  x2?: number | null;
+  y2?: number | null;
+  w?: number | null;
+  h?: number | null;
+  text?: string | null;
+  label?: string | null;
+  color?: string | null;
+  size?: string | null;
+  dash?: string | null;
+  fill?: string | null;
+  points?: VisualPoint[] | null;
 }
 
 export interface ClaudeResponse {
@@ -38,6 +67,26 @@ export interface ConversationTurn {
   role: "user" | "assistant";
   content: string;
   timestamp: number;
+}
+
+export interface BoardPageAsset {
+  id: string;
+  name: string;
+  mimeType: string;
+  dataUrl: string;
+  width: number;
+  height: number;
+  fileSize: number;
+  pageNumber?: number | null;
+}
+
+export interface UploadedMaterialEntry {
+  id: string;
+  name: string;
+  mimeType: string;
+  text: string;
+  boardPages: BoardPageAsset[];
+  displayOnBoard: boolean;
 }
 
 export interface TutorLanguageSelection {
