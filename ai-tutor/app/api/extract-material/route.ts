@@ -1,11 +1,11 @@
 import { NextRequest, NextResponse } from "next/server";
-import Groq from "groq-sdk";
 import path from "path";
 import { pathToFileURL } from "url";
 import { getDocument, GlobalWorkerOptions } from "pdfjs-dist/legacy/build/pdf.mjs";
 
-// Phase 5: Curriculum upload — extract text/formulas from photo using Groq Llama 4 Scout (MASTER_CONTEXT)
-const GROQ_MODEL = "meta-llama/llama-4-scout-17b-16e-instruct";
+// Local vLLM vision model on AMD MI300X for OCR
+const LOCAL_VISION_URL = process.env.LOCAL_VISION_URL ?? "http://165.245.139.45:8001/v1";
+const LOCAL_VISION_MODEL = "Qwen/Qwen2.5-VL-7B-Instruct";
 const PDF_TEXT_PAGE_LIMIT = 10;
 const EXTRACTION_PROMPT =
   "Extract all text, formulas, equations, and bullet points from this material. " +
@@ -31,30 +31,49 @@ function toBase64Payload(dataUrlOrBase64: string) {
   return { mimeType: null, base64: dataUrlOrBase64 };
 }
 
-async function extractTextFromImage(groq: Groq, imageDataUrl: string) {
-  const completion = await groq.chat.completions.create({
-    model: GROQ_MODEL,
-    max_tokens: 2048,
-    messages: [
-      {
-        role: "user",
-        content: [
-          {
-            type: "text",
-            text: EXTRACTION_PROMPT,
-          },
-          {
-            type: "image_url",
-            image_url: {
-              url: imageDataUrl,
+async function extractTextFromImage(imageDataUrl: string) {
+  const response = await fetch(`${LOCAL_VISION_URL}/chat/completions`, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify({
+      model: LOCAL_VISION_MODEL,
+      max_tokens: 2048,
+      messages: [
+        {
+          role: "user",
+          content: [
+            {
+              type: "text",
+              text: EXTRACTION_PROMPT,
             },
-          },
-        ],
-      },
-    ],
+            {
+              type: "image_url",
+              image_url: {
+                url: imageDataUrl,
+              },
+            },
+          ],
+        },
+      ],
+    }),
   });
 
-  return completion.choices[0]?.message?.content?.trim() ?? "";
+  if (!response.ok) {
+    const errorText = await response.text();
+    throw new Error(`Local vision model OCR request failed (${response.status}): ${errorText}`);
+  }
+
+  const body = await response.json() as {
+    choices?: Array<{
+      message?: {
+        content?: string;
+      };
+    }>;
+  };
+
+  return body.choices?.[0]?.message?.content?.trim() ?? "";
 }
 
 async function extractEmbeddedTextFromPdf(base64: string) {
@@ -123,19 +142,10 @@ export async function POST(request: NextRequest) {
         );
       }
     } else if (mimeType?.startsWith("image/")) {
-      const apiKey = process.env.GROQ_API_KEY;
-      if (!apiKey) {
-        console.error("GROQ_API_KEY missing from .env.local");
-        return NextResponse.json(
-          { error: "Groq not configured" },
-          { status: 500 }
-        );
-      }
-
       const imageDataUrl = rawFile.startsWith("data:")
         ? rawFile
         : `data:${mimeType ?? "image/png"};base64,${base64}`;
-      text = await extractTextFromImage(new Groq({ apiKey }), imageDataUrl);
+      text = await extractTextFromImage(imageDataUrl);
     } else {
       return NextResponse.json(
         { error: "Unsupported file type. Upload an image or PDF." },
