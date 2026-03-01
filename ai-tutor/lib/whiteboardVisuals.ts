@@ -932,53 +932,108 @@ async function playStructuredDiagram(
   shouldCancel: () => boolean
 ) {
   const viewport = editor.getViewportPageBounds();
-  const region = {
-    x: viewport.x + viewport.width * 0.12,
-    y: viewport.y + viewport.height * 0.18,
-    w: Math.min(Math.max(viewport.width * 0.7, 560), 980),
-    h: Math.min(Math.max(viewport.height * 0.58, 360), 620),
-  };
 
-  createLabel(editor, {
-    x: region.x - 8,
-    y: region.y - 52,
-    width: region.w + 24,
-    color: "blue",
-    size: "m",
-    text: plan.expression || "Visual explanation",
-  });
+  // Check if this looks like a step-by-step solution (mostly text elements)
+  const elements = plan.elements ?? [];
+  const textElementCount = elements.filter(e => e.kind === "text").length;
+  const isStepByStepSolution = textElementCount > 4 && textElementCount === elements.length;
 
-  if (plan.promptSummary?.trim()) {
-    createLabel(editor, {
-      x: region.x - 8,
-      y: region.y - 18,
-      width: region.w + 40,
-      color: "grey",
-      size: "s",
-      text: plan.promptSummary,
-    });
+  // Find existing shapes on the right side to avoid overlap
+  const allShapes = editor.getCurrentPageShapes();
+  const rightSideX = viewport.x + viewport.width * 0.5;
+  const shapesOnRight = allShapes.filter(shape => shape.x >= rightSideX);
+
+  // Find the lowest point of existing shapes on the right
+  let lowestY = viewport.y + 20;
+  for (const shape of shapesOnRight) {
+    const bounds = editor.getShapeGeometry(shape).bounds;
+    const shapeBottom = shape.y + bounds.height;
+    if (shapeBottom > lowestY) {
+      lowestY = shapeBottom;
+    }
   }
 
-  const elements = plan.elements ?? [];
-  for (const element of elements) {
+  // Add padding below existing content
+  const startY = shapesOnRight.length > 0 ? lowestY + 40 : viewport.y + viewport.height * 0.05;
+
+  // Check if we need to start a new column (if we're too far down)
+  const maxY = viewport.y + viewport.height * 0.85;
+  const needsNewColumn = startY > maxY - 200;
+
+  // Position step-by-step solutions on the far right to avoid covering worksheets
+  const region = isStepByStepSolution
+    ? {
+        x: needsNewColumn
+          ? viewport.x + viewport.width * 0.75  // Second column further right
+          : viewport.x + viewport.width * 0.55,  // First column
+        y: needsNewColumn ? viewport.y + 20 : startY,  // Start at top if new column
+        w: Math.min(viewport.width * 0.22, 350),  // Narrower to fit columns
+        h: viewport.height * 0.85,
+      }
+    : {
+        x: viewport.x + viewport.width * 0.55,
+        y: startY,
+        w: Math.min(viewport.width * 0.42, 450),
+        h: Math.min(Math.max(viewport.height * 0.58, 360), 620),
+      };
+
+  // Fixed line height for consistent spacing
+  const LINE_HEIGHT = 32;  // Pixels between each line
+
+  let currentY = region.y;
+
+  // Title
+  if (plan.expression) {
+    createLabel(editor, {
+      x: region.x,
+      y: currentY,
+      width: region.w,
+      color: "blue",
+      size: "s",
+      text: plan.expression,
+    });
+    currentY += LINE_HEIGHT + 8;  // Extra space after title
+  }
+
+  // Process each element
+  for (let i = 0; i < elements.length; i++) {
+    const element = elements[i];
     if (shouldCancel()) return;
 
     const color = normalizeColor(element.color);
     const size = normalizeSize(element.size);
     const dash = normalizeDash(element.dash);
     const fill = element.fill?.trim().toLowerCase() === "none" ? "none" : "solid";
-    const basePoint = mapPointToRegion({ x: element.x, y: element.y }, region);
 
-    if (element.kind === "text" && element.text?.trim()) {
+    // Handle text elements
+    if (element.kind === "text") {
+      const text = element.text?.trim() || "";
+
+      // Empty lines create smaller spacing
+      if (!text) {
+        currentY += LINE_HEIGHT * 0.5;
+        continue;
+      }
+
+      // Indent lines starting with → or spaces
+      const indent = text.startsWith("→") || text.startsWith("  ") ? 25 : 0;
+
       createLabel(editor, {
-        x: basePoint.x,
-        y: basePoint.y,
-        width: element.w ? (clampPercent(element.w) / 100) * region.w : 220,
+        x: region.x + indent,
+        y: currentY,
+        width: region.w - indent - 10,
         color,
-        size,
-        text: element.text,
+        size: "s",
+        text: text,
       });
+
+      currentY += LINE_HEIGHT;
+      await sleep(60);
+      continue;
     }
+
+    // For non-text elements, use percentage-based positioning relative to current region
+    const basePoint = mapPointToRegion({ x: element.x, y: element.y }, region);
 
     if (element.kind === "box") {
       createBox(editor, {
@@ -1080,10 +1135,10 @@ async function playStructuredDiagram(
   if (!shouldCancel() && plan.insightLabel?.trim()) {
     createLabel(editor, {
       x: region.x,
-      y: region.y + region.h + 18,
+      y: currentY + 16,  // Position below the last rendered element
       width: region.w + 32,
       color: "green",
-      size: "m",
+      size: "s",
       text: plan.insightLabel,
     });
   }

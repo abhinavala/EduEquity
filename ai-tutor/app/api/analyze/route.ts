@@ -6,10 +6,9 @@ import { getTutorLanguage } from "@/lib/tutorLanguages";
 // Groq for main conversation (smart, follows instructions)
 const groq = process.env.GROQ_API_KEY ? new Groq({ apiKey: process.env.GROQ_API_KEY }) : null;
 const GROQ_MODEL = "llama-3.3-70b-versatile";
-// Only match EXPLICIT requests to draw/visualize something
-// Excludes: "show me if this is right", "can you show me the answer"
+// Match explicit requests to draw/visualize something
 const VISUAL_REQUEST_PATTERN =
-  /\b(draw|graph|plot|visuali[sz]e|diagram|illustrate|sketch|map out)\s+(this|that|it|the|a|an|for me)/i;
+  /\b(draw|graph|plot|visuali[sz]e|diagram|illustrate|sketch|map out|show.{0,15}(whiteboard|board|step.?by.?step|visually|how to))\b/i;
 
 // Local vLLM models on AMD MI300X
 const LOCAL_MODEL_URL = process.env.LOCAL_MODEL_URL ?? "http://165.245.139.45:8000/v1";
@@ -48,6 +47,13 @@ CONVERSATION AWARENESS:
 - If the student got something right: celebrate specifically. "Yes — exactly, because no time is given!" not just "Good job!"
 - Pay close attention to the most recent tutor question and the student's latest reply. If the student answers "yes", "no", "I got 12", or something similarly short, interpret it in the context of the previous turn instead of treating it like a brand-new topic.
 - If the student is answering your prior question, acknowledge that answer directly before moving to the next step.
+
+WHITEBOARD REQUESTS - Use type "visual_explanation" when:
+- Student says "show me on the whiteboard", "write it on the board", "do it on the whiteboard"
+- Student says "next step" or "continue" after you've been showing steps
+- Student says "solve the whole problem" or "finish it on the board"
+- Student wants to SEE the work written out, not just hear it explained
+- When in doubt about whiteboard requests, use visual_explanation
 
 COURSE MATERIAL (only use these formulas and methods, do not introduce anything else):
 <COURSE_MATERIAL>
@@ -160,14 +166,36 @@ function isFiniteNumber(value: unknown): value is number {
 function looksLikeVisualRequest(transcript: string, conversationHistory: ConversationTurn[]) {
   const currentTranscript = transcript.toLowerCase();
 
-  // EXCLUDE: Checking work requests - these should NOT trigger visuals
-  if (/\b(check|correct|right|wrong|mistake|error|review|verify|is this|am i|did i)\b/i.test(currentTranscript)) {
-    return false;
+  // INCLUDE: Anything mentioning whiteboard/board with action verbs
+  if (/\b(on the |on my )?(whiteboard|board)\b/i.test(currentTranscript)) {
+    console.log("Visual request detected: whiteboard mentioned");
+    return true;
   }
 
-  // EXCLUDE: Explanation requests without visual keywords
-  if (/\b(explain|help me understand|what is|how do|why)\b/i.test(currentTranscript) &&
-      !/\b(draw|graph|plot|diagram|visualize|sketch)\b/i.test(currentTranscript)) {
+  // INCLUDE: "show me step by step", "show me how", "show me visually"
+  if (/\bshow\s+me\s+(step|how|visually|the)/i.test(currentTranscript)) {
+    console.log("Visual request detected: show me request");
+    return true;
+  }
+
+  // INCLUDE: "next step", "do the next", "continue" when recent context had whiteboard
+  const recentContext = conversationHistory.slice(-4).map(t => t.content).join(" ").toLowerCase();
+  if (/\b(next step|do the next|continue|keep going|go on)\b/i.test(currentTranscript) &&
+      /\b(whiteboard|board|step.?by.?step|showed|drawn)\b/i.test(recentContext)) {
+    console.log("Visual request detected: continuation of whiteboard work");
+    return true;
+  }
+
+  // INCLUDE: "solve it/this/the problem" + "on/whiteboard" or visual context
+  if (/\b(solve|work out|do|finish|complete)\s+(it|this|the|that|whole)\b/i.test(currentTranscript) &&
+      (/\b(whiteboard|board|on the)\b/i.test(currentTranscript) || /\bwhiteboard\b/i.test(recentContext))) {
+    console.log("Visual request detected: solve on whiteboard");
+    return true;
+  }
+
+  // EXCLUDE: Checking work requests - these should NOT trigger visuals
+  if (/\b(check|correct|right|wrong|mistake|error|review|verify|is this|am i|did i)\b/i.test(currentTranscript) &&
+      !/\b(whiteboard|board|draw|graph|diagram)\b/i.test(currentTranscript)) {
     return false;
   }
 
@@ -429,52 +457,66 @@ function buildStructuredDiagramPrompt(
 ) {
   const selectedLanguage = getTutorLanguage(languageCode);
 
-  return `You create whiteboard diagram plans for a tutoring app.
+  return `You are a math tutor writing step-by-step solutions on a whiteboard.
 
-Return only JSON with this schema:
+Return JSON with your solution steps:
 {
   "kind": "structured_diagram",
-  "expression": "Short title for the drawing",
-  "promptSummary": "One short sentence describing what the student wanted to see",
-  "insightLabel": "One short takeaway or next question" | null,
+  "expression": "Title (e.g., 'Finding the Derivative')",
+  "promptSummary": "Brief description",
+  "insightLabel": "Follow-up question for student" | null,
   "elements": [
-    {
-      "kind": "text" | "box" | "ellipse" | "line" | "arrow" | "polyline" | "point",
-      "x": 0-100,
-      "y": 0-100,
-      "x2": 0-100 | null,
-      "y2": 0-100 | null,
-      "w": 0-100 | null,
-      "h": 0-100 | null,
-      "text": "For text elements" | null,
-      "label": "Optional short label for a shape or point" | null,
-      "color": "blue/red/green/orange/purple/black/gray" | null,
-      "size": "s/m/l/xl or small/medium/large" | null,
-      "dash": "draw/solid/dashed/dotted" | null,
-      "fill": "solid or none" | null,
-      "points": [{ "x": 0-100, "y": 0-100 }] | null
-    }
+    {"kind": "text", "x": 0, "y": 0, "text": "line content", "color": "blue/black/green/red"}
   ]
 }
 
-Rules:
-- Build the picture directly from the student's request, not a canned example.
-- This is a hand-drawn whiteboard sketch, not photorealistic image generation.
-- Use 4-18 elements.
-- Use text sparingly. Prefer arrows, boxes, labels, and simple shapes.
-- Use polyline for curves, graph traces, or outlines.
-- Use the student's requested topic, objects, relationships, or process.
-- All visible labels should be in ${selectedLanguage.nativeLabel} when natural, while preserving equations and symbols exactly.
-- End with an insightLabel that helps the tutor continue the conversation.
+Write the ACTUAL step-by-step solution. Each element is one line.
 
-Student request:
-${transcript}
+EXAMPLE for "find derivative of x³ + 2x":
+{
+  "kind": "structured_diagram",
+  "expression": "Finding the Derivative",
+  "promptSummary": "Using power rule",
+  "insightLabel": "What pattern do you see with the exponents?",
+  "elements": [
+    {"kind": "text", "x": 0, "y": 0, "text": "Given: f(x) = x³ + 2x", "color": "blue"},
+    {"kind": "text", "x": 0, "y": 0, "text": "", "color": "black"},
+    {"kind": "text", "x": 0, "y": 0, "text": "Step 1: Apply power rule to x³", "color": "black"},
+    {"kind": "text", "x": 0, "y": 0, "text": "→ d/dx(x³) = 3x²", "color": "blue"},
+    {"kind": "text", "x": 0, "y": 0, "text": "", "color": "black"},
+    {"kind": "text", "x": 0, "y": 0, "text": "Step 2: Apply power rule to 2x", "color": "black"},
+    {"kind": "text", "x": 0, "y": 0, "text": "→ d/dx(2x) = 2", "color": "blue"},
+    {"kind": "text", "x": 0, "y": 0, "text": "", "color": "black"},
+    {"kind": "text", "x": 0, "y": 0, "text": "Step 3: Combine the results", "color": "black"},
+    {"kind": "text", "x": 0, "y": 0, "text": "→ f'(x) = 3x² + 2", "color": "blue"},
+    {"kind": "text", "x": 0, "y": 0, "text": "", "color": "black"},
+    {"kind": "text", "x": 0, "y": 0, "text": "Answer: f'(x) = 3x² + 2", "color": "green"}
+  ]
+}
 
-Recent conversation:
-${conversationHistory.slice(-6).map((turn) => `${turn.role}: ${turn.content}`).join("\n") || "No prior turns"}
+RULES:
+- Write REAL math, not placeholders
+- Use the actual problem from course material or conversation
+- Color code: black=explanations, blue=math work, green=final answer, red=errors/warnings
+- Use "→" prefix for math result lines (these get indented)
+- Empty text "" creates a blank line for spacing
+- 8-15 elements for a complete solution
+- Use ${selectedLanguage.nativeLabel} for explanations, keep math notation universal
+- x and y values are ignored (positioning handled automatically) - just set to 0
 
-Relevant course material:
-${courseMaterial.slice(0, 3000) || "No uploaded material"}`;
+CONVERSATION AWARENESS:
+- If student says "next step" or "continue": Show the NEXT step(s) in the solution, picking up where you left off
+- If student says "solve the whole problem" or "finish it": Show the COMPLETE solution from start to finish
+- If student says "do step 2" or similar: Show that specific step
+- Look at the conversation to understand what problem they're working on and where they are
+
+Student's current request: ${transcript}
+
+Recent conversation (shows what's been discussed/shown):
+${conversationHistory.slice(-6).map((turn) => `${turn.role}: ${turn.content}`).join("\n") || "None"}
+
+Course material (the problems they're working on):
+${courseMaterial.slice(0, 3000) || "Create a relevant example problem"}`;
 }
 
 async function generateStructuredDiagramFallback(
@@ -489,10 +531,10 @@ async function generateStructuredDiagramFallback(
     let content: string;
 
     if (groq) {
-      // Use Groq for better diagram generation
+      // Use Groq for better step-by-step solution generation
       const completion = await groq.chat.completions.create({
         model: GROQ_MODEL,
-        max_tokens: 1200,
+        max_tokens: 2000,
         response_format: { type: "json_object" },
         messages: [
           { role: "system", content: diagramPrompt },
@@ -732,11 +774,30 @@ function normalizeResponse(
       ? parsed.type
       : "socratic_response";
 
-  // Override: If user is checking work, don't use visual_explanation
-  const isCheckingWork = /\b(check|correct|right|wrong|mistake|error|review|verify|is this|am i|did i|look at)\b/i.test(transcript);
-  if (type === "visual_explanation" && isCheckingWork) {
-    console.log("Overriding visual_explanation to socratic_response (user is checking work)");
+  // Check if user wants whiteboard work
+  const isCheckingWork = /\b(check|correct|right|wrong|mistake|error|review|verify|is this|am i|did i)\b/i.test(transcript);
+  const wantsWhiteboard = /\b(whiteboard|board|on the board|step.?by.?step|visually|write it|show me how|solve.*(on|it)|next step|continue|finish it)\b/i.test(transcript);
+  const recentWhiteboardContext = conversationHistory.slice(-4).some(t =>
+    /\b(whiteboard|showed|step|board)\b/i.test(t.content)
+  );
+
+  // Override: If user is checking work AND not asking for a whiteboard demo, don't use visual_explanation
+  if (type === "visual_explanation" && isCheckingWork && !wantsWhiteboard) {
+    console.log("Overriding visual_explanation to socratic_response (user is checking work, not asking for visual)");
     type = "socratic_response";
+  }
+
+  // Override: If user clearly wants whiteboard but model said socratic_response, use visual_explanation
+  if (type === "socratic_response" && wantsWhiteboard && !isCheckingWork) {
+    console.log("Overriding socratic_response to visual_explanation (user wants whiteboard)");
+    type = "visual_explanation";
+  }
+
+  // Override: If user says "next step" or "continue" and we were doing whiteboard work, continue with visual
+  if (type === "socratic_response" && recentWhiteboardContext &&
+      /\b(next|continue|keep going|go on|more|finish)\b/i.test(transcript)) {
+    console.log("Overriding socratic_response to visual_explanation (continuing whiteboard work)");
+    type = "visual_explanation";
   }
 
   let practice_problem =
@@ -812,9 +873,9 @@ function normalizeResponse(
     visual_plan: normalizeVisualPlan(parsed.visual_plan),
   };
 
-  // Only use fallback visual plan if user explicitly asked for visual AND not checking work
-  const explicitVisualRequest = /\b(draw|graph|plot|visualize|sketch|diagram)\b/i.test(transcript);
-  if (fallbackVisualPlan && explicitVisualRequest && !isCheckingWork) {
+  // Only use fallback visual plan if user explicitly asked for visual AND not just checking work
+  const explicitVisualRequest = /\b(draw|graph|plot|visualize|sketch|diagram|whiteboard|step.?by.?step)\b/i.test(transcript);
+  if (fallbackVisualPlan && explicitVisualRequest && (!isCheckingWork || wantsWhiteboard)) {
     response.type = "visual_explanation";
     response.annotation = null;
     response.annotation_label = null;
@@ -1013,22 +1074,24 @@ export async function POST(request: NextRequest) {
     const normalized = normalizeResponse(parsed ?? {}, transcript, courseMaterial, normalizedConversation, rawLlmResponse);
     console.log("Normalized response:", JSON.stringify(normalized, null, 2));
 
-    // Only generate structured diagram if:
-    // 1. User EXPLICITLY asked for a visual (not just "show me if this is right")
-    // 2. Model said visual_explanation but didn't provide a plan
+    // Check if user explicitly asked for a visual/whiteboard demonstration
     const visualRequest = looksLikeVisualRequest(transcript, normalizedConversation);
     const usesBuiltInDemo =
       normalized.visual_plan?.kind === "parabola_tangent_demo" ||
       normalized.visual_plan?.kind === "integration_by_parts_demo";
+    const hasVisualPlan = normalized.visual_plan && normalized.visual_plan.kind;
+
+    // Generate diagram if user asked for visual, regardless of what model returned
+    // (model might not understand it should use visual_explanation)
     const needsDiagramFallback =
       visualRequest &&  // User explicitly asked for visual
-      normalized.type === "visual_explanation" &&  // Model agrees it's visual
-      !normalized.visual_plan &&  // But no plan provided
+      !hasVisualPlan &&  // No visual plan provided yet
       !usesBuiltInDemo;
 
-    console.log("Visual request check:", { visualRequest, type: normalized.type, needsDiagramFallback });
+    console.log("Visual request check:", { visualRequest, type: normalized.type, hasVisualPlan, needsDiagramFallback });
 
     if (needsDiagramFallback) {
+      console.log("Generating structured diagram for visual request...");
       const structuredDiagram = await generateStructuredDiagramFallback(
         transcript,
         courseMaterial,
