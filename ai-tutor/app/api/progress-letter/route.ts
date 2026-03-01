@@ -1,9 +1,10 @@
 import { NextRequest, NextResponse } from "next/server";
-import Groq from "groq-sdk";
 import { ConversationTurn, ProgressLetter, SessionMetrics } from "@/lib/types";
 import { getTutorLanguage } from "@/lib/tutorLanguages";
 
-const groq = new Groq({ apiKey: process.env.GROQ_API_KEY });
+// Local vLLM text model on AMD MI300X
+const LOCAL_MODEL_URL = process.env.LOCAL_MODEL_URL ?? "http://165.245.139.45:8000/v1";
+const LOCAL_TEXT_MODEL = "Qwen/Qwen2.5-7B-Instruct";
 
 interface ProgressLetterRequestBody {
   studentName?: string;
@@ -169,31 +170,44 @@ export async function POST(request: NextRequest) {
       return NextResponse.json({ error: "Missing session metrics" }, { status: 400 });
     }
 
-    if (!process.env.GROQ_API_KEY) {
-      return NextResponse.json(
-        buildFallbackLetter(studentName, sessionMetrics, courseMaterial, conversationHistory),
-        { status: 200 }
-      );
-    }
-
-    const completion = await groq.chat.completions.create({
-      model: "llama-3.3-70b-versatile",
-      response_format: { type: "json_object" },
-      max_tokens: 1024,
-      messages: [
-        {
-          role: "system",
-          content: buildPrompt(studentName, sessionMetrics, courseMaterial, conversationHistory),
-        },
-        {
-          role: "user",
-          content: "Generate the progress letter JSON now.",
-        },
-      ],
+    // Use local Qwen2.5 text model for progress letter generation
+    const textRes = await fetch(`${LOCAL_MODEL_URL}/chat/completions`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({
+        model: LOCAL_TEXT_MODEL,
+        max_tokens: 1024,
+        messages: [
+          {
+            role: "system",
+            content: buildPrompt(studentName, sessionMetrics, courseMaterial, conversationHistory),
+          },
+          {
+            role: "user",
+            content: "Generate the progress letter JSON now.",
+          },
+        ],
+      }),
     });
 
-    const content = completion.choices[0]?.message?.content ?? "{}";
-    const parsed = JSON.parse(content) as ProgressLetter;
+    if (!textRes.ok) {
+      const errorText = await textRes.text();
+      throw new Error(`Local text model request failed (${textRes.status}): ${errorText}`);
+    }
+
+    const textBody = await textRes.json() as {
+      choices?: Array<{
+        message?: {
+          content?: string;
+        };
+      }>;
+    };
+
+    const content = textBody.choices?.[0]?.message?.content ?? "{}";
+    const clean = content.replace(/```json\n?|```/g, "").trim();
+    const parsed = JSON.parse(clean) as ProgressLetter;
 
     return NextResponse.json(parsed);
   } catch (error) {

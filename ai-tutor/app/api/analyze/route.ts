@@ -1,11 +1,12 @@
 import { NextRequest, NextResponse } from "next/server";
-import Groq from "groq-sdk";
 import { ClaudeResponse, ConversationTurn, VisualPlan } from "@/lib/types";
 import { getTutorLanguage } from "@/lib/tutorLanguages";
 
-const groq = new Groq({ apiKey: process.env.GROQ_API_KEY });
-const OPENROUTER_URL = "https://openrouter.ai/api/v1/chat/completions";
-const OPENROUTER_VISION_MODEL = process.env.OPENROUTER_VISION_MODEL ?? "google/gemini-2.0-flash-001";
+// Local vLLM models on AMD MI300X
+const LOCAL_MODEL_URL = process.env.LOCAL_MODEL_URL ?? "http://165.245.139.45:8000/v1";
+const LOCAL_VISION_URL = process.env.LOCAL_VISION_URL ?? "http://165.245.139.45:8001/v1";
+const LOCAL_TEXT_MODEL = "Qwen/Qwen2.5-7B-Instruct";
+const LOCAL_VISION_MODEL = "Qwen/Qwen2.5-VL-7B-Instruct";
 
 function buildSystemPrompt(courseMaterial: string, turnCount: number, languageCode?: string): string {
   const selectedLanguage = getTutorLanguage(languageCode);
@@ -191,6 +192,46 @@ function detectParabolaDerivativePlan(
   };
 }
 
+function extractJSON(raw: string): Record<string, unknown> {
+  // First, try to strip markdown code fences
+  let cleaned = raw.replace(/```json\n?|```/g, "").trim();
+
+  // Try direct parse first
+  try {
+    return JSON.parse(cleaned);
+  } catch {
+    // Continue to extraction methods
+  }
+
+  // Try to find JSON object in the response (model might add conversational text before/after)
+  const jsonMatch = raw.match(/\{[\s\S]*\}/);
+  if (jsonMatch) {
+    try {
+      // Fix common escape issues: unescaped quotes in strings
+      let jsonStr = jsonMatch[0];
+      // Replace problematic escape sequences that aren't valid in JSON
+      jsonStr = jsonStr.replace(/\\(?!["\\/bfnrtu])/g, "\\\\");
+      return JSON.parse(jsonStr);
+    } catch {
+      // Try more aggressive cleaning
+      try {
+        let jsonStr = jsonMatch[0];
+        // Remove control characters except newlines and tabs
+        jsonStr = jsonStr.replace(/[\x00-\x08\x0b\x0c\x0e-\x1f]/g, "");
+        // Fix unescaped newlines in strings (common LLM mistake)
+        jsonStr = jsonStr.replace(/:\s*"([^"]*)\n([^"]*)"/g, ': "$1\\n$2"');
+        return JSON.parse(jsonStr);
+      } catch {
+        // Continue to fallback
+      }
+    }
+  }
+
+  // Final fallback: return empty object to trigger default response
+  console.warn("Could not extract JSON from LLM response:", raw.slice(0, 200));
+  return {};
+}
+
 function normalizeResponse(
   parsed: Record<string, unknown>,
   transcript: string,
@@ -285,35 +326,25 @@ export async function POST(request: NextRequest) {
     let parsed: Record<string, unknown>;
 
     if (canvasImageBase64) {
-      if (!process.env.OPENROUTER_API_KEY) {
-        return NextResponse.json(
-          { error: "OPENROUTER_API_KEY not configured for vision analysis" },
-          { status: 500 }
-        );
-      }
-
-      const openRouterRes = await fetch(OPENROUTER_URL, {
+      // Use local Qwen2.5-VL vision model for canvas analysis
+      const visionRes = await fetch(`${LOCAL_VISION_URL}/chat/completions`, {
         method: "POST",
         headers: {
-          Authorization: `Bearer ${process.env.OPENROUTER_API_KEY}`,
           "Content-Type": "application/json",
-          "HTTP-Referer": "http://localhost:3000",
-          "X-OpenRouter-Title": "EduEquity AI Tutor",
         },
         body: JSON.stringify({
-          model: OPENROUTER_VISION_MODEL,
-          response_format: { type: "json_object" },
+          model: LOCAL_VISION_MODEL,
           max_tokens: 1024,
           messages: buildVisionMessages(systemPrompt, normalizedConversation, canvasImageBase64),
         }),
       });
 
-      if (!openRouterRes.ok) {
-        const errorText = await openRouterRes.text();
-        throw new Error(`OpenRouter vision request failed (${openRouterRes.status}): ${errorText}`);
+      if (!visionRes.ok) {
+        const errorText = await visionRes.text();
+        throw new Error(`Local vision model request failed (${visionRes.status}): ${errorText}`);
       }
 
-      const openRouterBody = await openRouterRes.json() as {
+      const visionBody = await visionRes.json() as {
         choices?: Array<{
           message?: {
             content?: string;
@@ -321,37 +352,49 @@ export async function POST(request: NextRequest) {
         }>;
       };
 
-      const raw = openRouterBody.choices?.[0]?.message?.content?.trim() ?? "";
+      const raw = visionBody.choices?.[0]?.message?.content?.trim() ?? "";
       if (!raw) {
-        throw new Error("OpenRouter returned empty response");
+        throw new Error("Local vision model returned empty response");
       }
-      const clean = raw.replace(/```json\n?|```/g, "").trim();
-      parsed = JSON.parse(clean);
+      parsed = extractJSON(raw);
     } else {
-      if (!process.env.GROQ_API_KEY) {
-        return NextResponse.json(
-          { error: "GROQ_API_KEY not configured" },
-          { status: 500 }
-        );
-      }
+      // Use local Qwen2.5 text model for text-only analysis
       const historyMessages = normalizedConversation
         .map((t: ConversationTurn) => ({
           role: t.role as "user" | "assistant",
           content: t.content,
         }));
 
-      const completion = await groq.chat.completions.create({
-        model: "llama-3.3-70b-versatile",
-        response_format: { type: "json_object" },
-        max_tokens: 1024,
-        messages: [
-          { role: "system", content: systemPrompt },
-          ...historyMessages,
-        ],
+      const textRes = await fetch(`${LOCAL_MODEL_URL}/chat/completions`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          model: LOCAL_TEXT_MODEL,
+          max_tokens: 1024,
+          messages: [
+            { role: "system", content: systemPrompt },
+            ...historyMessages,
+          ],
+        }),
       });
 
-      const content = completion.choices[0]?.message?.content ?? "{}";
-      parsed = JSON.parse(content);
+      if (!textRes.ok) {
+        const errorText = await textRes.text();
+        throw new Error(`Local text model request failed (${textRes.status}): ${errorText}`);
+      }
+
+      const textBody = await textRes.json() as {
+        choices?: Array<{
+          message?: {
+            content?: string;
+          };
+        }>;
+      };
+
+      const content = textBody.choices?.[0]?.message?.content ?? "{}";
+      parsed = extractJSON(content);
     }
 
     const normalized = normalizeResponse(parsed, transcript, courseMaterial, normalizedConversation);
