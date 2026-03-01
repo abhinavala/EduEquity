@@ -10,11 +10,31 @@
 //
 // This is what makes annotation + audio perfectly synchronized.
 
-export async function speakText(text: string): Promise<void> {
+interface SpeakTextOptions {
+  languageCode?: string;
+  languageLocale?: string;
+}
+
+function findBrowserVoice(languageLocale?: string) {
+  if (!languageLocale || !window.speechSynthesis) return null;
+
+  const lowerLocale = languageLocale.toLowerCase();
+  const languagePrefix = lowerLocale.split("-")[0];
+  const voices = window.speechSynthesis.getVoices();
+
+  return (
+    voices.find((voice) => voice.lang.toLowerCase() === lowerLocale) ??
+    voices.find((voice) => voice.lang.toLowerCase().startsWith(`${languagePrefix}-`)) ??
+    voices.find((voice) => voice.lang.toLowerCase() === languagePrefix) ??
+    null
+  );
+}
+
+export async function speakText(text: string, options: SpeakTextOptions = {}): Promise<void> {
   const response = await fetch("/api/speak", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ text }),
+    body: JSON.stringify({ text, languageCode: options.languageCode }),
   });
 
   if (!response.ok) {
@@ -99,12 +119,19 @@ export async function speakText(text: string): Promise<void> {
 // Use ONLY if ElevenLabs fails (network error, quota, etc.)
 // This is NOT the primary TTS — ElevenLabs is the sponsor requirement.
 // Note: resolves even on error so canvas always unlocks.
-export function speakTextFallback(text: string): Promise<void> {
+export function speakTextFallback(text: string, options: SpeakTextOptions = {}): Promise<void> {
   return new Promise((resolve) => {
     if (!window.speechSynthesis) { resolve(); return; }
 
     window.speechSynthesis.cancel();
     const utterance = new SpeechSynthesisUtterance(text);
+    if (options.languageLocale) {
+      utterance.lang = options.languageLocale;
+    }
+    const voice = findBrowserVoice(options.languageLocale);
+    if (voice) {
+      utterance.voice = voice;
+    }
     utterance.rate = 0.9;
     utterance.pitch = 1.0;
     utterance.onend = () => resolve();

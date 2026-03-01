@@ -1,26 +1,39 @@
 "use client";
 
+import { useEffect, useRef } from "react";
 import { Tldraw, Editor } from "tldraw";
 import "tldraw/tldraw.css";
-import { DraggableStylePanel } from "./DraggableStylePanel";
 import RightSideToolbar from "./RightSideToolbar";
 import { EduEquityMenuPanel, EduEquityNavigationPanel } from "./TldrawTopPanels";
 
 interface WhiteboardCanvasProps {
   isLocked: boolean;
+  tldrawLocale: string;
   onEditorReady: (editor: Editor) => void;
 }
 
-export default function WhiteboardCanvas({ isLocked, onEditorReady }: WhiteboardCanvasProps) {
+export default function WhiteboardCanvas({
+  isLocked,
+  tldrawLocale,
+  onEditorReady,
+}: WhiteboardCanvasProps) {
+  const editorRef = useRef<Editor | null>(null);
+
+  useEffect(() => {
+    editorRef.current?.user.updateUserPreferences({ locale: tldrawLocale });
+  }, [tldrawLocale]);
+
   return (
     <div className="eduequity-canvas relative w-full h-screen">
-
       <Tldraw
-        onMount={onEditorReady}
+        onMount={(editor) => {
+          editor.user.updateUserPreferences({ locale: tldrawLocale });
+          editorRef.current = editor;
+          onEditorReady(editor);
+        }}
         components={{
           MenuPanel: EduEquityMenuPanel,
           NavigationPanel: EduEquityNavigationPanel,
-          StylePanel: DraggableStylePanel,
           Toolbar: RightSideToolbar,
         }}
       />

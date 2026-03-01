@@ -5,6 +5,8 @@
 // Disabled while AI is processing or speaking.
 
 import { useState, useEffect, useRef, useCallback } from "react";
+import { TutorLanguageOption } from "@/lib/tutorLanguages";
+import { getUiCopy } from "@/lib/uiTranslations";
 
 declare global {
   interface Window {
@@ -16,12 +18,18 @@ declare global {
 interface VoiceControllerProps {
   onTranscriptReady: (transcript: string) => void;
   isAiActive: boolean;
+  language: TutorLanguageOption;
 }
 
-export default function VoiceController({ onTranscriptReady, isAiActive }: VoiceControllerProps) {
+export default function VoiceController({
+  onTranscriptReady,
+  isAiActive,
+  language,
+}: VoiceControllerProps) {
   const [isListening, setIsListening] = useState(false);
   const [liveTranscript, setLiveTranscript] = useState("");
   const recognitionRef = useRef<InstanceType<typeof SpeechRecognition> | null>(null);
+  const ui = getUiCopy(language.code);
 
   useEffect(() => {
     const API = window.SpeechRecognition || window.webkitSpeechRecognition;
@@ -33,7 +41,7 @@ export default function VoiceController({ onTranscriptReady, isAiActive }: Voice
     const recognition = new API();
     recognition.continuous = false;
     recognition.interimResults = true;
-    recognition.lang = "en-US";
+    recognition.lang = language.recognitionLocale;
 
     recognition.onstart = () => {
       setIsListening(true);
@@ -67,9 +75,14 @@ export default function VoiceController({ onTranscriptReady, isAiActive }: Voice
 
     recognitionRef.current = recognition;
     return () => {
+      try {
+        recognition.abort();
+      } catch {
+        // ignore cleanup race
+      }
       recognitionRef.current = null;
     };
-  }, [onTranscriptReady]);
+  }, [language.recognitionLocale, onTranscriptReady]);
 
   const startListening = useCallback(() => {
     if (recognitionRef.current && !isListening && !isAiActive) {
@@ -123,7 +136,7 @@ export default function VoiceController({ onTranscriptReady, isAiActive }: Voice
           stopListening();
         }}
         disabled={isAiActive}
-        title="Hold to speak (or hold Space)"
+        title={ui.holdToSpeakTitle}
         className={`
           w-16 h-16 rounded-full flex items-center justify-center text-2xl
           shadow-xl transition-all duration-150 select-none
@@ -139,14 +152,17 @@ export default function VoiceController({ onTranscriptReady, isAiActive }: Voice
       </button>
 
       {!isAiActive && !isListening && (
-        <p className="text-xs text-gray-500 bg-white/80 px-3 py-1 rounded-full shadow">
-          Hold to speak · Space key
+        <p dir={language.direction} className="text-xs text-gray-500 bg-white/80 px-3 py-1 rounded-full shadow">
+          {ui.holdToSpeakIn(language.nativeLabel)}
         </p>
       )}
 
       {isListening && (
-        <div className="bg-black/75 text-white text-sm px-4 py-2 rounded-full max-w-xs text-center">
-          {liveTranscript || "Listening..."}
+        <div
+          dir={language.direction}
+          className="bg-black/75 text-white text-sm px-4 py-2 rounded-full max-w-xs text-center"
+        >
+          {liveTranscript || ui.listening}
         </div>
       )}
     </div>

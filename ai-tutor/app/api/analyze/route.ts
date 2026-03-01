@@ -1,12 +1,15 @@
 import { NextRequest, NextResponse } from "next/server";
 import Groq from "groq-sdk";
-import { ConversationTurn } from "@/lib/types";
+import { ClaudeResponse, ConversationTurn, VisualPlan } from "@/lib/types";
+import { getTutorLanguage } from "@/lib/tutorLanguages";
 
 const groq = new Groq({ apiKey: process.env.GROQ_API_KEY });
 const OPENROUTER_URL = "https://openrouter.ai/api/v1/chat/completions";
 const OPENROUTER_VISION_MODEL = process.env.OPENROUTER_VISION_MODEL ?? "google/gemini-2.0-flash-001";
 
-function buildSystemPrompt(courseMaterial: string, turnCount: number): string {
+function buildSystemPrompt(courseMaterial: string, turnCount: number, languageCode?: string): string {
+  const selectedLanguage = getTutorLanguage(languageCode);
+
   return `You are a warm, patient Socratic STEM tutor named Alex.
 
 PERSONALITY:
@@ -21,6 +24,14 @@ SOCRATIC RULES:
 - Each question should be ONE step smaller than the full answer
 - If the student seems stuck (short answers, "I don't know"), give a bigger hint but still end with a question
 
+LANGUAGE MODE:
+- Respond entirely in ${selectedLanguage.nativeLabel} (${selectedLanguage.label}) unless the student explicitly asks to switch languages.
+- Treat ${selectedLanguage.nativeLabel} as the student's strongest language for both listening and speaking.
+- If the student mixes languages, keep your response in ${selectedLanguage.nativeLabel} and briefly translate key STEM terms when helpful.
+- Preserve equations, variables, numbers, and multiple-choice letters exactly as written on the page.
+- Make your analogies feel natural for a student who uses ${selectedLanguage.nativeLabel}. ${selectedLanguage.culturalGuidance}
+- Avoid stereotypes. The goal is familiarity and clarity, not cultural performance.
+
 CONVERSATION AWARENESS:
 - This is turn ${turnCount} of this session
 - If turn > 1: reference what was discussed before. "Earlier you mentioned..." or "Building on what we found..."
@@ -33,11 +44,13 @@ COURSE MATERIAL (only use these formulas and methods, do not introduce anything 
 ${courseMaterial || "No material uploaded. Use general STEM knowledge."}
 </COURSE_MATERIAL>
 
+When uploaded material is written in a different language, explain it in ${selectedLanguage.nativeLabel} while keeping the original formula notation intact.
+
 You MUST respond with a JSON object. Do not include any text outside the JSON.
 
 Schema:
 {
-  "type": "annotation" | "practice_problem" | "socratic_response",
+  "type": "annotation" | "practice_problem" | "socratic_response" | "visual_explanation",
   "speech_text": "What to say aloud. Warm, conversational, under 60 words.",
   "annotation": {
     "x_pct": number,
@@ -45,7 +58,16 @@ Schema:
     "width_pct": number,
     "height_pct": number
   } | null,
-  "practice_problem": "Full problem text for whiteboard." | null
+  "annotation_label": "Very short label for the red box target, such as 'your A choice' or 'this exponent'." | null,
+  "practice_problem": "Full problem text for whiteboard." | null,
+  "visual_plan": {
+    "kind": "parabola_tangent_demo" | "concept_steps",
+    "expression": "f(x) = x²" | "Short visual title",
+    "conceptLabel": "Short concept label" | null,
+    "secondaryLabel": "Second short label" | null,
+    "tangentLabel": "Short tangent label" | null,
+    "insightLabel": "Short insight label" | null
+  } | null
 }
 
 TYPE RULES:
@@ -57,8 +79,17 @@ TYPE RULES:
   x_pct = % from left edge to left side of the erroneous symbol/expression.
   y_pct = % from top edge to top of the erroneous symbol/expression.
   Add ~2% padding around the actual text for visual clarity.
+  annotation_label must name the exact target in 2-5 words.
   speech_text must reference what's in the red box: "Look at the formula in the red box..."
 - "practice_problem": Student asked for a practice problem. Set practice_problem to full problem text. annotation must be null.
+- "visual_explanation": Student explicitly asks you to show, draw, graph, visualize, or demonstrate something on the whiteboard.
+  Use this only when a visual aid would be clearly helpful.
+  Supported visual right now:
+  - derivative / tangent / slope intuition for a quadratic such as f(x) = x²
+  - simple concept map / step flow for a process or relationship
+  When you use this type, set visual_plan.kind to "parabola_tangent_demo" and fill the labels briefly.
+  For a generic concept map, set visual_plan.kind to "concept_steps" and use conceptLabel / secondaryLabel / insightLabel as short whiteboard labels.
+  annotation and practice_problem must both be null.
 - "socratic_response": General question, no image, or no clear error visible. annotation and practice_problem are both null.`;
 }
 
@@ -123,6 +154,117 @@ function buildVisionMessages(systemPrompt: string, conversationHistory: Conversa
   ];
 }
 
+function detectParabolaDerivativePlan(
+  transcript: string,
+  courseMaterial: string,
+  conversationHistory: ConversationTurn[]
+): VisualPlan | null {
+  const latestContext = [
+    transcript,
+    ...conversationHistory.slice(-6).map((turn) => turn.content),
+    courseMaterial.slice(0, 2000),
+  ].join("\n");
+
+  const visualRequest = /\b(show|draw|graph|plot|visualize|visualise|diagram|illustrate|demonstrate)\b/i.test(
+    latestContext
+  );
+  const derivativeContext = /\b(derivative|tangent|slope|steep|steeper)\b/i.test(latestContext);
+  const quadraticContext = /f\s*\(\s*x\s*\)\s*=\s*x\s*(\^|\u005e)?\s*2|x²|x\^2|\bparabola\b/i.test(
+    latestContext
+  );
+
+  if (!visualRequest || !derivativeContext || !quadraticContext) {
+    return null;
+  }
+
+  const expressionMatch =
+    latestContext.match(/f\s*\(\s*x\s*\)\s*=\s*x\s*(?:\^|\u005e)?\s*2/i)?.[0] ??
+    latestContext.match(/x²|x\^2/i)?.[0] ??
+    "f(x) = x²";
+
+  return {
+    kind: "parabola_tangent_demo",
+    expression: expressionMatch.replace(/\s+/g, " "),
+    conceptLabel: "derivative = slope at a point",
+    tangentLabel: "slope = 2x",
+    insightLabel: "As x gets bigger, the tangent gets steeper.",
+  };
+}
+
+function normalizeResponse(
+  parsed: Record<string, unknown>,
+  transcript: string,
+  courseMaterial: string,
+  conversationHistory: ConversationTurn[]
+): ClaudeResponse {
+  const fallbackVisualPlan = detectParabolaDerivativePlan(transcript, courseMaterial, conversationHistory);
+  const speech_text =
+    typeof parsed.speech_text === "string" && parsed.speech_text.trim()
+      ? parsed.speech_text.trim()
+      : "Let’s look at that together.";
+  const type =
+    parsed.type === "annotation" ||
+    parsed.type === "practice_problem" ||
+    parsed.type === "socratic_response" ||
+    parsed.type === "visual_explanation"
+      ? parsed.type
+      : "socratic_response";
+
+  const response: ClaudeResponse = {
+    type,
+    speech_text,
+    annotation:
+      parsed.annotation && typeof parsed.annotation === "object"
+        ? (parsed.annotation as ClaudeResponse["annotation"])
+        : null,
+    annotation_label:
+      typeof parsed.annotation_label === "string" && parsed.annotation_label.trim()
+        ? parsed.annotation_label.trim()
+        : null,
+    practice_problem:
+      typeof parsed.practice_problem === "string" && parsed.practice_problem.trim()
+        ? parsed.practice_problem.trim()
+        : null,
+    visual_plan:
+      parsed.visual_plan &&
+      typeof parsed.visual_plan === "object" &&
+      ((((parsed.visual_plan as VisualPlan).kind === "parabola_tangent_demo") ||
+        (parsed.visual_plan as VisualPlan).kind === "concept_steps"))
+        ? (parsed.visual_plan as VisualPlan)
+        : null,
+  };
+
+  if (fallbackVisualPlan) {
+    response.type = "visual_explanation";
+    response.annotation = null;
+    response.annotation_label = null;
+    response.practice_problem = null;
+    response.visual_plan = {
+      ...fallbackVisualPlan,
+      ...(response.visual_plan?.kind === "parabola_tangent_demo" ? response.visual_plan : {}),
+    };
+  }
+
+  if (response.type === "annotation") {
+    response.practice_problem = null;
+    response.visual_plan = null;
+  }
+
+  if (response.type === "practice_problem") {
+    response.annotation = null;
+    response.annotation_label = null;
+    response.visual_plan = null;
+  }
+
+  if (response.type === "visual_explanation") {
+    response.annotation = null;
+    response.annotation_label = null;
+    response.practice_problem = null;
+  }
+
+  return response;
+}
+
 export async function POST(request: NextRequest) {
   try {
     const body = await request.json();
@@ -130,6 +272,7 @@ export async function POST(request: NextRequest) {
     const courseMaterial = (body.courseMaterial as string) ?? "";
     const canvasImageBase64 = body.canvasImageBase64 as string | undefined;
     const conversationHistory = (body.conversationHistory ?? []) as ConversationTurn[];
+    const languageCode = body.languageCode as string | undefined;
 
     if (!transcript) {
       return NextResponse.json({ error: "No transcript provided" }, { status: 400 });
@@ -137,7 +280,7 @@ export async function POST(request: NextRequest) {
 
     const normalizedConversation = normalizeConversationHistory(conversationHistory, transcript);
     const turnCount = normalizedConversation.length;
-    const systemPrompt = buildSystemPrompt(courseMaterial, turnCount);
+    const systemPrompt = buildSystemPrompt(courseMaterial, turnCount, languageCode);
 
     let parsed: Record<string, unknown>;
 
@@ -211,7 +354,8 @@ export async function POST(request: NextRequest) {
       parsed = JSON.parse(content);
     }
 
-    return NextResponse.json(parsed);
+    const normalized = normalizeResponse(parsed, transcript, courseMaterial, normalizedConversation);
+    return NextResponse.json(normalized);
   } catch (error) {
     console.error("Analyze API error:", error);
     return NextResponse.json(
@@ -220,6 +364,8 @@ export async function POST(request: NextRequest) {
         speech_text: "I had trouble processing that. Could you try again?",
         annotation: null,
         practice_problem: null,
+        visual_plan: null,
+        annotation_label: null,
       },
       { status: 200 }
     );

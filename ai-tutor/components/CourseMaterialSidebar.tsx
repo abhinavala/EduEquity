@@ -1,6 +1,9 @@
 "use client";
 
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
+import { ConversationTurn, ProgressLetter, SessionMetrics } from "@/lib/types";
+import { DEFAULT_TUTOR_LANGUAGE, TUTOR_LANGUAGES, TutorLanguageCode } from "@/lib/tutorLanguages";
+import { getUiCopy } from "@/lib/uiTranslations";
 
 interface UploadedMaterialEntry {
   id: string;
@@ -11,6 +14,10 @@ interface UploadedMaterialEntry {
 
 interface CourseMaterialSidebarProps {
   onCourseMaterialChange: (courseMaterial: string) => void;
+  selectedLanguageCode: TutorLanguageCode;
+  onLanguageChange: (languageCode: TutorLanguageCode) => void;
+  conversationHistory: ConversationTurn[];
+  sessionMetrics: SessionMetrics;
 }
 
 function fileToBase64(file: File): Promise<string> {
@@ -32,23 +39,94 @@ function buildCourseMaterial(entries: UploadedMaterialEntry[]) {
     .join("\n\n");
 }
 
-export default function CourseMaterialSidebar({ onCourseMaterialChange }: CourseMaterialSidebarProps) {
+function formatDuration(elapsedMs: number, formatMinutes: (count: number) => string) {
+  const minutes = Math.max(1, Math.round(elapsedMs / 60000));
+  return formatMinutes(minutes);
+}
+
+export default function CourseMaterialSidebar({
+  onCourseMaterialChange,
+  selectedLanguageCode,
+  onLanguageChange,
+  conversationHistory,
+  sessionMetrics,
+}: CourseMaterialSidebarProps) {
   const [entries, setEntries] = useState<UploadedMaterialEntry[]>([]);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [progressLabel, setProgressLabel] = useState("");
+  const [isOpen, setIsOpen] = useState(true);
+  const [studentName, setStudentName] = useState("");
+  const [isRefreshingLetter, setIsRefreshingLetter] = useState(false);
+  const [generatedLetter, setGeneratedLetter] = useState<ProgressLetter | null>(null);
+  const [letterError, setLetterError] = useState<string | null>(null);
   const inputRef = useRef<HTMLInputElement>(null);
 
-  useEffect(() => {
-    onCourseMaterialChange(buildCourseMaterial(entries));
-  }, [entries, onCourseMaterialChange]);
+  const courseMaterial = useMemo(() => buildCourseMaterial(entries), [entries]);
 
+  useEffect(() => {
+    onCourseMaterialChange(courseMaterial);
+  }, [courseMaterial, onCourseMaterialChange]);
+
+  const activeLanguage =
+    TUTOR_LANGUAGES.find((language) => language.code === selectedLanguageCode) ?? DEFAULT_TUTOR_LANGUAGE;
+  const ui = getUiCopy(selectedLanguageCode);
+
+  const effectiveMetrics = useMemo<SessionMetrics>(
+    () => ({
+      ...sessionMetrics,
+      activeCourseFiles: entries.map((entry) => entry.name),
+      tutorLanguageCode: selectedLanguageCode,
+    }),
+    [entries, selectedLanguageCode, sessionMetrics]
+  );
+
+  const previewTrigger = useMemo(
+    () =>
+      JSON.stringify({
+        studentName: studentName.trim(),
+        language: selectedLanguageCode,
+        files: entries.map((entry) => ({
+          id: entry.id,
+          name: entry.name,
+          length: entry.text.length,
+        })),
+        turns: conversationHistory.map((turn) => ({
+          role: turn.role,
+          content: turn.content,
+        })),
+        metrics: {
+          annotationCount: effectiveMetrics.annotationCount,
+          practiceProblemCount: effectiveMetrics.practiceProblemCount,
+          visualAidCount: effectiveMetrics.visualAidCount,
+          userTurnCount: effectiveMetrics.userTurnCount,
+          assistantTurnCount: effectiveMetrics.assistantTurnCount,
+          activeCourseFiles: effectiveMetrics.activeCourseFiles,
+          elapsedMinutes: Math.max(1, Math.round(effectiveMetrics.elapsedMs / 60000)),
+        },
+      }),
+    [
+      conversationHistory,
+      effectiveMetrics.activeCourseFiles,
+      effectiveMetrics.annotationCount,
+      effectiveMetrics.assistantTurnCount,
+      effectiveMetrics.elapsedMs,
+      effectiveMetrics.practiceProblemCount,
+      effectiveMetrics.userTurnCount,
+      effectiveMetrics.visualAidCount,
+      entries,
+      selectedLanguageCode,
+      studentName,
+    ]
+  );
   const handleFileChange = async (event: React.ChangeEvent<HTMLInputElement>) => {
     const files = Array.from(event.target.files ?? []);
-    const hasInvalidFile = files.some((file) => !file.type.startsWith("image/") && file.type !== "application/pdf");
+    const hasInvalidFile = files.some(
+      (file) => !file.type.startsWith("image/") && file.type !== "application/pdf"
+    );
 
     if (files.length === 0 || hasInvalidFile) {
-      setError("Please select images or PDFs only.");
+      setError(ui.invalidFileSelection);
       event.target.value = "";
       return;
     }
@@ -61,7 +139,7 @@ export default function CourseMaterialSidebar({ onCourseMaterialChange }: Course
 
     try {
       for (const [index, file] of files.entries()) {
-        setProgressLabel(`Extracting ${index + 1} of ${files.length}: ${file.name}`);
+        setProgressLabel(ui.extractingFile(index + 1, files.length, file.name));
 
         try {
           const fileData = await fileToBase64(file);
@@ -81,7 +159,7 @@ export default function CourseMaterialSidebar({ onCourseMaterialChange }: Course
           const text = data.text?.trim() ?? "";
 
           if (!text) {
-            throw new Error("No readable text found.");
+            throw new Error(ui.noReadableTextFound);
           }
 
           nextEntries.push({
@@ -90,8 +168,8 @@ export default function CourseMaterialSidebar({ onCourseMaterialChange }: Course
             mimeType: file.type,
             text,
           });
-        } catch (error) {
-          const detail = error instanceof Error ? error.message : "Extraction failed";
+        } catch (uploadError) {
+          const detail = uploadError instanceof Error ? uploadError.message : "Extraction failed";
           failures.push(`${file.name}: ${detail}`);
         }
       }
@@ -114,89 +192,329 @@ export default function CourseMaterialSidebar({ onCourseMaterialChange }: Course
     setEntries((current) => current.filter((entry) => entry.id !== id));
   };
 
+  useEffect(() => {
+    if (conversationHistory.length === 0 && entries.length === 0) {
+      setGeneratedLetter(null);
+      setLetterError(null);
+      setIsRefreshingLetter(false);
+      return;
+    }
+
+    let cancelled = false;
+    const timeoutId = window.setTimeout(async () => {
+      setIsRefreshingLetter(true);
+      setLetterError(null);
+      const requestMetrics: SessionMetrics = { ...effectiveMetrics };
+
+      try {
+        const response = await fetch("/api/progress-letter", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            studentName,
+            conversationHistory,
+            sessionMetrics: requestMetrics,
+            courseMaterial,
+          }),
+        });
+
+        if (!response.ok) {
+          const data = await response.json().catch(() => ({}));
+          throw new Error((data as { error?: string }).error || `Failed to build letter (${response.status})`);
+        }
+
+        const letter = (await response.json()) as ProgressLetter;
+        if (!cancelled) {
+          setGeneratedLetter(letter);
+        }
+      } catch (generateError) {
+        if (!cancelled) {
+          setLetterError(
+            generateError instanceof Error ? generateError.message : ui.progressLetterFailed
+          );
+        }
+      } finally {
+        if (!cancelled) {
+          setIsRefreshingLetter(false);
+        }
+      }
+    }, 650);
+
+    return () => {
+      cancelled = true;
+      window.clearTimeout(timeoutId);
+    };
+  }, [
+    courseMaterial,
+    conversationHistory,
+    effectiveMetrics,
+    entries.length,
+    previewTrigger,
+    studentName,
+    ui.progressLetterFailed,
+  ]);
+
   return (
-    <aside className="absolute right-4 top-4 z-[120] w-[320px] rounded-2xl border border-slate-200/80 bg-white/95 p-4 shadow-2xl backdrop-blur">
-      <div className="flex items-start justify-between gap-3">
+    <aside
+      dir={activeLanguage.direction}
+      className="absolute right-4 top-4 z-[120] w-[360px] max-w-[calc(100vw-2rem)]"
+    >
+      <button
+        type="button"
+        onClick={() => setIsOpen((value) => !value)}
+        className="flex w-full items-center justify-between rounded-2xl border border-slate-200/80 bg-white/95 px-4 py-3 text-left shadow-2xl backdrop-blur transition hover:border-slate-300"
+        aria-expanded={isOpen}
+      >
         <div>
-          <p className="text-xs font-semibold uppercase tracking-[0.18em] text-slate-500">Course Files</p>
-          <h2 className="mt-1 text-lg font-semibold text-slate-900">What the tutor should use</h2>
+          <p className="text-[11px] font-semibold uppercase tracking-[0.2em] text-slate-500">{ui.sessionPanelEyebrow}</p>
+          <h2 className="mt-1 text-base font-semibold text-slate-900">
+            {ui.sessionPanelTitle}
+          </h2>
         </div>
-        <span className="rounded-full bg-slate-100 px-2.5 py-1 text-xs font-medium text-slate-700">
-          {entries.length} active
-        </span>
-      </div>
-
-      <p className="mt-2 text-sm leading-5 text-slate-600">
-        Add or remove PDFs and images at any time. Only the active files here are used as tutoring context.
-      </p>
-
-      <input
-        ref={inputRef}
-        type="file"
-        accept="image/*,application/pdf,.pdf"
-        multiple
-        onChange={handleFileChange}
-        className="hidden"
-        aria-label="Add course files"
-      />
-
-      <div className="mt-4 flex items-center gap-2">
-        <button
-          type="button"
-          onClick={() => inputRef.current?.click()}
-          disabled={loading}
-          className="rounded-xl bg-slate-900 px-3 py-2 text-sm font-medium text-white transition hover:bg-slate-700 disabled:cursor-not-allowed disabled:opacity-60"
-        >
-          {loading ? "Adding..." : "Add Files"}
-        </button>
-        {loading && (
-          <span className="text-xs font-medium text-slate-500">
-            {progressLabel || "Extracting..."}
+        <div className="flex items-center gap-2">
+          <span className="rounded-full bg-slate-100 px-2.5 py-1 text-xs font-medium text-slate-700">
+            {ui.filesBadge(entries.length)}
           </span>
-        )}
-      </div>
-
-      {error && (
-        <div className="mt-3 rounded-xl border border-red-200 bg-red-50 px-3 py-2 text-xs leading-5 text-red-700">
-          {error}
+          <span className="text-lg text-slate-500">{isOpen ? "▾" : "▸"}</span>
         </div>
-      )}
+      </button>
 
-      <div className="mt-4 max-h-[340px] space-y-2 overflow-y-auto pr-1">
-        {entries.length === 0 ? (
-          <div className="rounded-xl border border-dashed border-slate-300 bg-slate-50 px-3 py-4 text-sm text-slate-500">
-            No files added yet.
-          </div>
-        ) : (
-          entries.map((entry) => (
-            <div
-              key={entry.id}
-              className="rounded-xl border border-slate-200 bg-slate-50 px-3 py-3 shadow-sm"
-            >
+      {isOpen && (
+        <div className="mt-2 overflow-hidden rounded-2xl border border-slate-200/80 bg-white/95 shadow-2xl backdrop-blur">
+          <div className="max-h-[calc(100vh-8rem)] space-y-5 overflow-y-auto px-4 py-4">
+            <section className="rounded-2xl border border-slate-200 bg-slate-50 px-3 py-3">
               <div className="flex items-start justify-between gap-3">
-                <div className="min-w-0">
-                  <p className="truncate text-sm font-medium text-slate-900">{entry.name}</p>
-                  <p className="mt-1 text-xs uppercase tracking-[0.12em] text-slate-500">
-                    {entry.mimeType === "application/pdf" ? "PDF" : "Image"}
+                <div>
+                  <p className="text-xs font-semibold uppercase tracking-[0.18em] text-slate-500">
+                    {ui.tutorLanguageEyebrow}
                   </p>
+                  <p className="mt-1 text-sm text-slate-600">
+                    {ui.tutorLanguageDescription(activeLanguage.nativeLabel)}
+                  </p>
+                </div>
+                <span className="rounded-full bg-white px-2.5 py-1 text-xs font-medium text-slate-700">
+                  {formatDuration(effectiveMetrics.elapsedMs, ui.minutesShort)}
+                </span>
+              </div>
+              <select
+                id="tutor-language"
+                value={selectedLanguageCode}
+                onChange={(event) => onLanguageChange(event.target.value as TutorLanguageCode)}
+                className="mt-3 w-full rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm font-medium text-slate-900 outline-none transition focus:border-slate-400"
+              >
+                {TUTOR_LANGUAGES.map((language) => (
+                  <option key={language.code} value={language.code}>
+                    {language.nativeLabel} · {language.label}
+                  </option>
+                ))}
+              </select>
+            </section>
+
+            <section>
+              <div className="flex items-center justify-between gap-3">
+                <div>
+                  <p className="text-xs font-semibold uppercase tracking-[0.18em] text-slate-500">{ui.courseFilesEyebrow}</p>
+                  <h3 className="mt-1 text-sm font-semibold text-slate-900">
+                    {ui.courseFilesTitle}
+                  </h3>
                 </div>
                 <button
                   type="button"
-                  onClick={() => handleRemoveEntry(entry.id)}
-                  className="rounded-lg px-2 py-1 text-xs font-medium text-slate-500 transition hover:bg-slate-200 hover:text-slate-800"
-                  aria-label={`Remove ${entry.name}`}
+                  onClick={() => inputRef.current?.click()}
+                  disabled={loading}
+                  className="rounded-xl bg-slate-900 px-3 py-2 text-sm font-medium text-white transition hover:bg-slate-700 disabled:cursor-not-allowed disabled:opacity-60"
                 >
-                  Remove
+                  {loading ? ui.adding : ui.addFiles}
                 </button>
               </div>
 
-              <p className="mt-2 line-clamp-3 text-xs leading-5 text-slate-600">
-                {entry.text}
+              <p className="mt-2 text-sm leading-5 text-slate-600">
+                {ui.courseFilesDescription}
               </p>
-            </div>
-          ))
-        )}
-      </div>
+
+              <input
+                ref={inputRef}
+                type="file"
+                accept="image/*,application/pdf,.pdf"
+                multiple
+                onChange={handleFileChange}
+                className="hidden"
+                aria-label="Add course files"
+              />
+
+              {(loading || error) && (
+                <div className="mt-3 space-y-2">
+                  {loading && (
+                    <div className="rounded-xl border border-slate-200 bg-slate-50 px-3 py-2 text-xs font-medium text-slate-500">
+                      {progressLabel || "Extracting..."}
+                    </div>
+                  )}
+                  {error && (
+                    <div className="rounded-xl border border-red-200 bg-red-50 px-3 py-2 text-xs leading-5 text-red-700">
+                      {error}
+                    </div>
+                  )}
+                </div>
+              )}
+
+              <div className="mt-3 max-h-52 space-y-2 overflow-y-auto pr-1">
+                {entries.length === 0 ? (
+                  <div className="rounded-xl border border-dashed border-slate-300 bg-slate-50 px-3 py-4 text-sm text-slate-500">
+                    {ui.noFilesAdded}
+                  </div>
+                ) : (
+                  entries.map((entry) => (
+                    <div
+                      key={entry.id}
+                      className="rounded-xl border border-slate-200 bg-slate-50 px-3 py-3 shadow-sm"
+                    >
+                      <div className="flex items-start justify-between gap-3">
+                        <div className="min-w-0">
+                          <p className="truncate text-sm font-medium text-slate-900">{entry.name}</p>
+                          <p className="mt-1 text-xs uppercase tracking-[0.12em] text-slate-500">
+                            {entry.mimeType === "application/pdf" ? "PDF" : "Image"}
+                          </p>
+                        </div>
+                        <button
+                          type="button"
+                          onClick={() => handleRemoveEntry(entry.id)}
+                          className="rounded-lg px-2 py-1 text-xs font-medium text-slate-500 transition hover:bg-slate-200 hover:text-slate-800"
+                          aria-label={`Remove ${entry.name}`}
+                        >
+                          {ui.remove}
+                        </button>
+                      </div>
+
+                      <p className="mt-2 line-clamp-3 text-xs leading-5 text-slate-600">
+                        {entry.text}
+                      </p>
+                    </div>
+                  ))
+                )}
+              </div>
+            </section>
+
+            <section>
+              <div className="flex items-start justify-between gap-3">
+                <div>
+                  <p className="text-xs font-semibold uppercase tracking-[0.18em] text-slate-500">
+                    {ui.conversationEyebrow}
+                  </p>
+                  <h3 className="mt-1 text-sm font-semibold text-slate-900">
+                    {ui.conversationTitle}
+                  </h3>
+                </div>
+                <span className="rounded-full bg-slate-100 px-2.5 py-1 text-xs font-medium text-slate-700">
+                  {ui.turnsBadge(conversationHistory.length)}
+                </span>
+              </div>
+
+              <div className="mt-3 max-h-64 space-y-3 overflow-y-auto pr-1">
+                {conversationHistory.length === 0 ? (
+                  <div className="rounded-xl border border-dashed border-slate-300 bg-slate-50 px-3 py-4 text-sm text-slate-500">
+                    {ui.conversationEmpty}
+                  </div>
+                ) : (
+                  conversationHistory.map((turn, index) => (
+                    <div
+                      key={`${turn.timestamp}-${index}`}
+                      className={`rounded-2xl px-3 py-3 text-sm shadow-sm ${
+                        turn.role === "user"
+                          ? "bg-slate-900 text-white"
+                          : "border border-slate-200 bg-slate-50 text-slate-800"
+                      }`}
+                    >
+                      <div className="flex items-center justify-between gap-3 text-[11px] font-semibold uppercase tracking-[0.16em]">
+                        <span className={turn.role === "user" ? "text-slate-300" : "text-slate-500"}>
+                          {turn.role === "user" ? ui.student : ui.tutor}
+                        </span>
+                        <span className={turn.role === "user" ? "text-slate-400" : "text-slate-400"}>
+                          {new Date(turn.timestamp).toLocaleTimeString(activeLanguage.recognitionLocale, {
+                            hour: "numeric",
+                            minute: "2-digit",
+                          })}
+                        </span>
+                      </div>
+                      <p
+                        dir={activeLanguage.direction}
+                        className={`mt-2 whitespace-pre-wrap leading-6 ${
+                          turn.role === "user" ? "text-white" : "text-slate-700"
+                        }`}
+                      >
+                        {turn.content}
+                      </p>
+                    </div>
+                  ))
+                )}
+              </div>
+            </section>
+
+            <section className="rounded-2xl border border-slate-200 bg-slate-50 px-3 py-3">
+              <div className="flex items-start justify-between gap-3">
+                <div>
+                  <p className="text-xs font-semibold uppercase tracking-[0.18em] text-slate-500">
+                    {ui.progressLetterEyebrow}
+                  </p>
+                  <h3 className="mt-1 text-sm font-semibold text-slate-900">
+                    {ui.progressLetterTitle}
+                  </h3>
+                </div>
+                {isRefreshingLetter && (
+                  <span className="rounded-full bg-white px-2.5 py-1 text-[11px] font-medium text-slate-600">
+                    {ui.thinking}
+                  </span>
+                )}
+              </div>
+              <p className="mt-2 text-sm leading-5 text-slate-600">
+                {ui.progressLetterDescription}
+              </p>
+
+              <div className="mt-3 grid gap-3">
+                <input
+                  type="text"
+                  value={studentName}
+                  onChange={(event) => setStudentName(event.target.value)}
+                  placeholder={ui.studentNamePlaceholder}
+                  className="w-full rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm text-slate-900 outline-none transition focus:border-slate-400"
+                />
+
+                <div className="grid grid-cols-2 gap-2 text-xs text-slate-600">
+                  <div className="rounded-xl border border-slate-200 bg-white px-3 py-2">
+                    <div className="font-semibold text-slate-900">{effectiveMetrics.annotationCount}</div>
+                    <div>{ui.highlightedChecks}</div>
+                  </div>
+                  <div className="rounded-xl border border-slate-200 bg-white px-3 py-2">
+                    <div className="font-semibold text-slate-900">{effectiveMetrics.practiceProblemCount}</div>
+                    <div>{ui.practiceProblems}</div>
+                  </div>
+                </div>
+              </div>
+
+              {letterError && (
+                <div className="mt-3 rounded-xl border border-red-200 bg-red-50 px-3 py-2 text-xs leading-5 text-red-700">
+                  {letterError}
+                </div>
+              )}
+
+              {generatedLetter ? (
+                <div className="mt-3 rounded-xl border border-slate-200 bg-white px-3 py-3">
+                  <p className="text-xs font-semibold uppercase tracking-[0.16em] text-slate-500">
+                    {ui.latestLetterPreview}
+                  </p>
+                  <p className="mt-2 text-sm font-semibold text-slate-900">{generatedLetter.headline}</p>
+                  <p dir={activeLanguage.direction} className="mt-2 text-sm leading-6 text-slate-700">
+                    {generatedLetter.summaryParagraph}
+                  </p>
+                </div>
+              ) : (
+                <div className="mt-3 rounded-xl border border-dashed border-slate-300 bg-white px-3 py-4 text-sm text-slate-500">
+                  {ui.conversationEmpty}
+                </div>
+              )}
+            </section>
+          </div>
+        </div>
+      )}
     </aside>
   );
 }

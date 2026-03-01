@@ -1,4 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
+import { getTutorLanguage, getTutorLanguageVoiceEnvKey } from "@/lib/tutorLanguages";
 
 type ElevenLabsErrorPayload = {
   detail?: {
@@ -12,14 +13,20 @@ type ElevenLabsErrorPayload = {
 
 export async function POST(request: NextRequest) {
   try {
-    const { text } = await request.json();
+    const { text, languageCode } = await request.json() as {
+      text?: string;
+      languageCode?: string;
+    };
 
     if (!text || typeof text !== "string" || text.trim().length === 0) {
       return NextResponse.json({ error: "No text provided" }, { status: 400 });
     }
 
     const apiKey = process.env.ELEVENLABS_API_KEY;
-    const voiceId = process.env.ELEVENLABS_VOICE_ID;
+    const selectedLanguage = getTutorLanguage(languageCode);
+    const voiceId =
+      process.env[getTutorLanguageVoiceEnvKey(selectedLanguage.code)] ??
+      process.env.ELEVENLABS_VOICE_ID;
 
     if (!apiKey || !voiceId) {
       console.error("ElevenLabs credentials missing from .env.local");
@@ -30,6 +37,7 @@ export async function POST(request: NextRequest) {
     const body: Record<string, unknown> = {
       text: text.trim(),
       model_id: "eleven_turbo_v2_5",
+      language_code: selectedLanguage.elevenLabsLanguageCode,
     };
     const elevenRes = await fetch(
       `https://api.elevenlabs.io/v1/text-to-speech/${voiceId}/stream`,

@@ -1,7 +1,7 @@
 "use client";
 
 import { AnnotationBox } from "@/lib/types";
-import { CanvasCaptureArea, CanvasExportResult } from "@/lib/canvasExport";
+import { CanvasExportResult } from "@/lib/canvasExport";
 
 interface PixelRect {
   x: number;
@@ -32,8 +32,8 @@ function toPixelRect(annotation: AnnotationBox, width: number, height: number): 
 }
 
 function expandRect(rect: PixelRect, imageWidth: number, imageHeight: number): PixelRect {
-  const padX = Math.max(20, Math.round(rect.width * 0.75));
-  const padY = Math.max(20, Math.round(rect.height * 0.75));
+  const padX = Math.max(12, Math.round(rect.width * 0.5));
+  const padY = Math.max(12, Math.round(rect.height * 0.5));
   const x = clamp(rect.x - padX, 0, imageWidth - 1);
   const y = clamp(rect.y - padY, 0, imageHeight - 1);
   const maxX = clamp(rect.x + rect.width + padX, x + 1, imageWidth);
@@ -67,6 +67,7 @@ function getBestComponent(imageData: ImageData, targetRect: PixelRect): Componen
   const visited = new Uint8Array(width * height);
   const centerX = targetRect.x + targetRect.width / 2;
   const centerY = targetRect.y + targetRect.height / 2;
+  const targetArea = Math.max(1, targetRect.width * targetRect.height);
   let best: ComponentBounds | null = null;
   let bestScore = Number.NEGATIVE_INFINITY;
 
@@ -138,7 +139,16 @@ function getBestComponent(imageData: ImageData, targetRect: PixelRect): Componen
         Math.min(bounds.maxY, targetRect.y + targetRect.height) - Math.max(bounds.minY, targetRect.y)
       );
       const overlapArea = overlapWidth * overlapHeight;
-      const score = bounds.pixelCount * 1.4 + overlapArea * 2 - distancePenalty * 0.9 - area * 0.05;
+      const overlapRatio = overlapArea / Math.max(1, area);
+      const oversizeRatio = area / targetArea;
+      const oversizePenalty = oversizeRatio > 8 ? (oversizeRatio - 8) * 45 : 0;
+      const score =
+        bounds.pixelCount * 1.15 +
+        overlapArea * 3 +
+        overlapRatio * 180 -
+        distancePenalty * 1.1 -
+        area * 0.11 -
+        oversizePenalty;
 
       if (score > bestScore) {
         bestScore = score;
@@ -165,15 +175,6 @@ function componentToAnnotation(bounds: ComponentBounds, searchRect: PixelRect, i
   };
 }
 
-function remapToCanvas(annotation: AnnotationBox, captureArea: CanvasCaptureArea): AnnotationBox {
-  return {
-    x_pct: captureArea.left_pct + (annotation.x_pct * captureArea.width_pct) / 100,
-    y_pct: captureArea.top_pct + (annotation.y_pct * captureArea.height_pct) / 100,
-    width_pct: (annotation.width_pct * captureArea.width_pct) / 100,
-    height_pct: (annotation.height_pct * captureArea.height_pct) / 100,
-  };
-}
-
 function loadImage(base64: string): Promise<HTMLImageElement> {
   return new Promise((resolve, reject) => {
     const image = new Image();
@@ -187,7 +188,7 @@ export async function refineAnnotationForCanvas(
   annotation: AnnotationBox,
   exportResult: CanvasExportResult | null
 ): Promise<AnnotationBox> {
-  if (!exportResult?.captureArea) return annotation;
+  if (!exportResult) return annotation;
 
   try {
     const image = await loadImage(exportResult.base64);
@@ -195,7 +196,7 @@ export async function refineAnnotationForCanvas(
     canvas.width = image.width;
     canvas.height = image.height;
     const context = canvas.getContext("2d", { willReadFrequently: true });
-    if (!context) return remapToCanvas(annotation, exportResult.captureArea);
+    if (!context) return annotation;
 
     context.drawImage(image, 0, 0);
 
@@ -216,8 +217,8 @@ export async function refineAnnotationForCanvas(
       ? componentToAnnotation(component, searchRect, image.width, image.height)
       : annotation;
 
-    return remapToCanvas(refined, exportResult.captureArea);
+    return refined;
   } catch {
-    return remapToCanvas(annotation, exportResult.captureArea);
+    return annotation;
   }
 }
