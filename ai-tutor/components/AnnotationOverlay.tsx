@@ -12,7 +12,6 @@
 //   This div is absolute inset-0 — same pixel area as the canvas.
 //   Groq's x_pct/y_pct applied as CSS % land on the same spot.
 
-import { useEffect, useState } from "react";
 import { AnnotationBox } from "@/lib/types";
 
 interface AnnotationOverlayProps {
@@ -20,18 +19,6 @@ interface AnnotationOverlayProps {
 }
 
 export default function AnnotationOverlay({ annotation }: AnnotationOverlayProps) {
-  const [visible, setVisible] = useState(false);
-
-  // Animate in — small delay ensures DOM is ready before transition
-  useEffect(() => {
-    if (annotation) {
-      const t = setTimeout(() => setVisible(true), 50);
-      return () => clearTimeout(t);
-    } else {
-      setVisible(false);
-    }
-  }, [annotation]);
-
   if (!annotation) return null;
 
   const boxStyle = {
@@ -46,32 +33,26 @@ export default function AnnotationOverlay({ annotation }: AnnotationOverlayProps
 
       {/* Main red box — scales in */}
       <div
-        className={`absolute border-[3px] border-red-500 rounded-sm transition-all duration-300 ease-out ${
-          visible ? "opacity-100 scale-100" : "opacity-0 scale-95"
-        }`}
+        className="absolute border-[3px] border-red-500 rounded-sm"
         style={{ ...boxStyle, backgroundColor: "rgba(239, 68, 68, 0.12)", transformOrigin: "center" }}
       />
 
       {/* Pulse ring — draws attention */}
       <div
-        className={`absolute border-2 border-red-400 rounded-sm animate-ping ${
-          visible ? "opacity-20" : "opacity-0"
-        }`}
+        className="absolute border-2 border-red-400 rounded-sm animate-ping opacity-20"
         style={boxStyle}
       />
 
       {/* "Check this" label above the box */}
-      {visible && (
-        <div
-          className="absolute bg-red-500 text-white text-[11px] font-bold px-2 py-0.5 rounded shadow-lg whitespace-nowrap"
-          style={{
-            left: `${annotation.x_pct}%`,
-            top: `calc(${annotation.y_pct}% - 22px)`,
-          }}
-        >
-          ⚠ Check this
-        </div>
-      )}
+      <div
+        className="absolute bg-red-500 text-white text-[11px] font-bold px-2 py-0.5 rounded shadow-lg whitespace-nowrap"
+        style={{
+          left: `${annotation.x_pct}%`,
+          top: `calc(${annotation.y_pct}% - 22px)`,
+        }}
+      >
+        ⚠ Check this
+      </div>
     </div>
   );
 }

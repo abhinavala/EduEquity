@@ -1,32 +1,38 @@
 "use client";
 
-import { useState, useRef, useCallback, useEffect } from "react";
+import { useState, useRef, useCallback } from "react";
 import { Editor, createShapeId, toRichText } from "tldraw";
 import WhiteboardCanvas from "@/components/WhiteboardCanvas";
 import AnnotationOverlay from "@/components/AnnotationOverlay";
+import CourseMaterialSidebar from "@/components/CourseMaterialSidebar";
 import VoiceController from "@/components/VoiceController";
 import { exportCanvasAsBase64 } from "@/lib/canvasExport";
+import { refineAnnotationForCanvas } from "@/lib/annotationRefinement";
 import { speakText, speakTextFallback } from "@/lib/elevenlabs";
 import { AnnotationBox, ClaudeResponse, ConversationTurn, SessionState } from "@/lib/types";
 
 interface SessionWrapperProps {
-  courseMaterial: string;
+  initialCourseMaterial?: string;
 }
 
 function insertProblem(editor: Editor, text: string) {
   try {
     const vp = editor.getViewportPageBounds();
+    const width = Math.min(Math.max(vp.width * 0.34, 280), 520);
     editor.createShape({
       id: createShapeId(),
       type: "text",
-      x: vp.x + 40,
+      x: vp.x + Math.max(40, vp.width * 0.16),
       y: vp.y + 40,
       props: {
         richText: toRichText(text),
-        autoSize: true,
+        autoSize: false,
+        w: width,
         size: "m",
         font: "draw",
         color: "blue",
+        textAlign: "start",
+        scale: 1,
       },
     });
   } catch (err) {
@@ -34,19 +40,29 @@ function insertProblem(editor: Editor, text: string) {
   }
 }
 
-export default function SessionWrapper({ courseMaterial }: SessionWrapperProps) {
+function buildAssistantHistoryEntry(response: ClaudeResponse): string {
+  const parts = [response.speech_text.trim()];
+
+  if (response.practice_problem?.trim()) {
+    parts.push(`Practice problem placed on canvas: ${response.practice_problem.trim()}`);
+  }
+
+  if (response.annotation) {
+    parts.push("The tutor highlighted a specific part of the student's work on the canvas.");
+  }
+
+  return parts.join("\n");
+}
+
+export default function SessionWrapper({ initialCourseMaterial = "" }: SessionWrapperProps) {
   const [sessionState, setSessionState] = useState<SessionState>("idle");
   const [annotation, setAnnotation] = useState<AnnotationBox | null>(null);
   const [statusText, setStatusText] = useState<string>("");
 
   const editorRef = useRef<Editor | null>(null);
-  const courseMaterialRef = useRef<string>(courseMaterial);
+  const courseMaterialRef = useRef<string>(initialCourseMaterial);
   const canvasContainerRef = useRef<HTMLDivElement>(null);
   const conversationRef = useRef<ConversationTurn[]>([]);
-
-  useEffect(() => {
-    courseMaterialRef.current = courseMaterial;
-  }, [courseMaterial]);
 
   const isCanvasLocked = sessionState === "processing" || sessionState === "speaking";
 
@@ -54,16 +70,22 @@ export default function SessionWrapper({ courseMaterial }: SessionWrapperProps) 
     editorRef.current = editor;
   }, []);
 
+  const handleCourseMaterialChange = useCallback((courseMaterial: string) => {
+    courseMaterialRef.current = courseMaterial;
+  }, []);
+
   const handleTranscript = useCallback(
     async (transcript: string) => {
       if (!editorRef.current || isCanvasLocked) return;
 
       setAnnotation(null);
-      conversationRef.current.push({
+      const previousConversation = conversationRef.current;
+      const userTurn: ConversationTurn = {
         role: "user",
         content: transcript,
         timestamp: Date.now(),
-      });
+      };
+      const conversationForRequest = [...previousConversation, userTurn].slice(-10);
 
       setSessionState("processing");
       setStatusText("Thinking...");
@@ -78,22 +100,24 @@ export default function SessionWrapper({ courseMaterial }: SessionWrapperProps) 
             transcript,
             courseMaterial: courseMaterialRef.current,
             canvasImageBase64: exportResult?.base64 ?? null,
-            conversationHistory: conversationRef.current.slice(0, -1).slice(-8),
+            conversationHistory: conversationForRequest,
           }),
         });
 
         if (!response.ok) throw new Error(`API error ${response.status}`);
 
         const aiResponse: ClaudeResponse = await response.json();
-
-        conversationRef.current.push({
+        const assistantTurn: ConversationTurn = {
           role: "assistant",
-          content: aiResponse.speech_text,
+          content: buildAssistantHistoryEntry(aiResponse),
           timestamp: Date.now(),
-        });
+        };
+
+        conversationRef.current = [...conversationForRequest, assistantTurn].slice(-12);
 
         if (aiResponse.type === "annotation" && aiResponse.annotation) {
-          setAnnotation(aiResponse.annotation);
+          const refinedAnnotation = await refineAnnotationForCanvas(aiResponse.annotation, exportResult);
+          setAnnotation(refinedAnnotation);
         }
 
         if (aiResponse.type === "practice_problem" && aiResponse.practice_problem && editorRef.current) {
@@ -113,6 +137,7 @@ export default function SessionWrapper({ courseMaterial }: SessionWrapperProps) 
         setStatusText("");
       } catch (error) {
         console.error("Pipeline error:", error);
+        conversationRef.current = previousConversation;
         setSessionState("idle");
         setStatusText("Something went wrong — try again");
         setTimeout(() => setStatusText(""), 3000);
@@ -126,6 +151,8 @@ export default function SessionWrapper({ courseMaterial }: SessionWrapperProps) 
       <div ref={canvasContainerRef} className="absolute inset-0">
         <WhiteboardCanvas isLocked={isCanvasLocked} onEditorReady={handleEditorReady} />
       </div>
+
+      <CourseMaterialSidebar onCourseMaterialChange={handleCourseMaterialChange} />
 
       <AnnotationOverlay annotation={annotation} />
 
@@ -147,7 +174,7 @@ export default function SessionWrapper({ courseMaterial }: SessionWrapperProps) 
 
       <VoiceController onTranscriptReady={handleTranscript} isAiActive={isCanvasLocked} />
 
-      <div className="absolute bottom-4 left-1/2 -translate-x-1/2 z-[90] pointer-events-none">
+      <div className="absolute bottom-4 left-4 z-[90] pointer-events-none">
         <div className="bg-black/60 text-white text-xs px-4 py-2 rounded-full font-mono">
           {sessionState} · {isCanvasLocked ? "locked" : "unlocked"}
         </div>

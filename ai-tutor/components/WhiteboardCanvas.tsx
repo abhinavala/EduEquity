@@ -3,6 +3,8 @@
 import { Tldraw, Editor } from "tldraw";
 import "tldraw/tldraw.css";
 import { DraggableStylePanel } from "./DraggableStylePanel";
+import RightSideToolbar from "./RightSideToolbar";
+import { EduEquityMenuPanel, EduEquityNavigationPanel } from "./TldrawTopPanels";
 
 interface WhiteboardCanvasProps {
   isLocked: boolean;
@@ -11,12 +13,15 @@ interface WhiteboardCanvasProps {
 
 export default function WhiteboardCanvas({ isLocked, onEditorReady }: WhiteboardCanvasProps) {
   return (
-    <div className="relative w-full h-screen">
+    <div className="eduequity-canvas relative w-full h-screen">
 
       <Tldraw
         onMount={onEditorReady}
         components={{
+          MenuPanel: EduEquityMenuPanel,
+          NavigationPanel: EduEquityNavigationPanel,
           StylePanel: DraggableStylePanel,
+          Toolbar: RightSideToolbar,
         }}
       />
 

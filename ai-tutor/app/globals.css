@@ -28,3 +28,35 @@ body {
   color: var(--foreground);
   font-family: Arial, Helvetica, sans-serif;
 }
+
+.eduequity-canvas .tlui-main-toolbar--vertical {
+  left: auto;
+  right: calc(var(--tl-space-3) + var(--tl-sab));
+  top: 50%;
+  bottom: auto;
+  transform: translateY(-50%);
+  padding-left: 0;
+  padding-right: calc(var(--tl-space-3) + var(--tl-sab));
+}
+
+.eduequity-canvas .tlui-main-toolbar--vertical .tlui-main-toolbar__inner {
+  align-items: flex-end;
+}
+
+.eduequity-canvas .tlui-main-toolbar--vertical .tlui-main-toolbar__left {
+  flex-direction: row-reverse;
+}
+
+.eduequity-canvas .tlui-main-toolbar--vertical .tlui-main-toolbar__extras {
+  order: 0;
+}
+
+.eduequity-canvas .tlui-main-toolbar--vertical .tlui-main-toolbar__extras__controls {
+  border-top-left-radius: var(--tl-radius-4);
+  border-bottom-left-radius: var(--tl-radius-4);
+  border-top-right-radius: 0;
+  border-bottom-right-radius: 0;
+  margin-top: 8px;
+  margin-left: 0;
+  margin-right: -2px;
+}

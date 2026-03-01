@@ -1,10 +1,10 @@
 import { NextRequest, NextResponse } from "next/server";
 import Groq from "groq-sdk";
-import { GoogleGenerativeAI } from "@google/generative-ai";
 import { ConversationTurn } from "@/lib/types";
 
 const groq = new Groq({ apiKey: process.env.GROQ_API_KEY });
-const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY ?? "");
+const OPENROUTER_URL = "https://openrouter.ai/api/v1/chat/completions";
+const OPENROUTER_VISION_MODEL = process.env.OPENROUTER_VISION_MODEL ?? "google/gemini-2.0-flash-001";
 
 function buildSystemPrompt(courseMaterial: string, turnCount: number): string {
   return `You are a warm, patient Socratic STEM tutor named Alex.
@@ -25,6 +25,8 @@ CONVERSATION AWARENESS:
 - This is turn ${turnCount} of this session
 - If turn > 1: reference what was discussed before. "Earlier you mentioned..." or "Building on what we found..."
 - If the student got something right: celebrate specifically. "Yes — exactly, because no time is given!" not just "Good job!"
+- Pay close attention to the most recent tutor question and the student's latest reply. If the student answers "yes", "no", "I got 12", or something similarly short, interpret it in the context of the previous turn instead of treating it like a brand-new topic.
+- If the student is answering your prior question, acknowledge that answer directly before moving to the next step.
 
 COURSE MATERIAL (only use these formulas and methods, do not introduce anything else):
 <COURSE_MATERIAL>
@@ -49,12 +51,76 @@ Schema:
 TYPE RULES:
 - "annotation": A canvas image was provided AND student asked to check their work.
   Find the specific error. Set annotation to the TIGHT bounding box of that error in the image (0–100, where 0,0 is top-left corner of the image).
+  The box must sit on the student's actual handwritten ink, symbol, number, or chosen answer, not on empty space around it.
+  If the student wrote a single answer such as "A", box only that letter.
+  Ignore toolbars, UI chrome, and empty margins.
   x_pct = % from left edge to left side of the erroneous symbol/expression.
   y_pct = % from top edge to top of the erroneous symbol/expression.
   Add ~2% padding around the actual text for visual clarity.
   speech_text must reference what's in the red box: "Look at the formula in the red box..."
 - "practice_problem": Student asked for a practice problem. Set practice_problem to full problem text. annotation must be null.
 - "socratic_response": General question, no image, or no clear error visible. annotation and practice_problem are both null.`;
+}
+
+function normalizeConversationHistory(
+  conversationHistory: ConversationTurn[],
+  transcript: string
+): ConversationTurn[] {
+  const trimmedHistory: ConversationTurn[] = conversationHistory
+    .filter((turn) => turn.content?.trim())
+    .slice(-10)
+    .map<ConversationTurn>((turn) => ({
+      role: turn.role,
+      content: turn.content.trim(),
+      timestamp: turn.timestamp,
+    }));
+
+  const lastTurn = trimmedHistory[trimmedHistory.length - 1];
+  if (lastTurn?.role === "user" && lastTurn.content === transcript.trim()) {
+    return trimmedHistory;
+  }
+
+  const nextTurn: ConversationTurn = {
+    role: "user",
+    content: transcript.trim(),
+    timestamp: Date.now(),
+  };
+
+  const nextHistory = [...trimmedHistory, nextTurn];
+
+  return nextHistory.slice(-10);
+}
+
+function buildVisionMessages(systemPrompt: string, conversationHistory: ConversationTurn[], canvasImageBase64: string) {
+  const latestUserTurn = conversationHistory[conversationHistory.length - 1];
+  const priorTurns = latestUserTurn?.role === "user" ? conversationHistory.slice(0, -1) : conversationHistory;
+  const finalPrompt =
+    latestUserTurn?.role === "user"
+      ? latestUserTurn.content
+      : "The student just spoke, but their latest message was missing. Ask a short clarifying question.";
+
+  return [
+    { role: "system", content: systemPrompt },
+    ...priorTurns.map((turn) => ({
+      role: turn.role,
+      content: turn.content,
+    })),
+    {
+      role: "user" as const,
+      content: [
+        {
+          type: "text",
+          text: `Student's latest message: "${finalPrompt}"\n\nUse the conversation so far to interpret this reply correctly. If the student is answering your previous question, continue from that exact point.`,
+        },
+        {
+          type: "image_url",
+          image_url: {
+            url: `data:image/png;base64,${canvasImageBase64}`,
+          },
+        },
+      ],
+    },
+  ];
 }
 
 export async function POST(request: NextRequest) {
@@ -69,46 +135,52 @@ export async function POST(request: NextRequest) {
       return NextResponse.json({ error: "No transcript provided" }, { status: 400 });
     }
 
-    const turnCount = conversationHistory.length;
+    const normalizedConversation = normalizeConversationHistory(conversationHistory, transcript);
+    const turnCount = normalizedConversation.length;
     const systemPrompt = buildSystemPrompt(courseMaterial, turnCount);
 
     let parsed: Record<string, unknown>;
 
     if (canvasImageBase64) {
-      if (!process.env.GEMINI_API_KEY) {
+      if (!process.env.OPENROUTER_API_KEY) {
         return NextResponse.json(
-          { error: "GEMINI_API_KEY not configured for vision analysis" },
+          { error: "OPENROUTER_API_KEY not configured for vision analysis" },
           { status: 500 }
         );
       }
-      const model = genAI.getGenerativeModel({ model: "gemini-2.0-flash" });
 
-      const historyContext =
-        conversationHistory.length > 0
-          ? "\n\nPrevious conversation:\n" +
-            conversationHistory
-              .slice(-8)
-              .map((t: ConversationTurn) => `${t.role === "user" ? "Student" : "Tutor"}: ${t.content}`)
-              .join("\n")
-          : "";
-
-      const imagePart = {
-        inlineData: {
-          data: canvasImageBase64,
-          mimeType: "image/png" as const,
+      const openRouterRes = await fetch(OPENROUTER_URL, {
+        method: "POST",
+        headers: {
+          Authorization: `Bearer ${process.env.OPENROUTER_API_KEY}`,
+          "Content-Type": "application/json",
+          "HTTP-Referer": "http://localhost:3000",
+          "X-OpenRouter-Title": "EduEquity AI Tutor",
         },
+        body: JSON.stringify({
+          model: OPENROUTER_VISION_MODEL,
+          response_format: { type: "json_object" },
+          max_tokens: 1024,
+          messages: buildVisionMessages(systemPrompt, normalizedConversation, canvasImageBase64),
+        }),
+      });
+
+      if (!openRouterRes.ok) {
+        const errorText = await openRouterRes.text();
+        throw new Error(`OpenRouter vision request failed (${openRouterRes.status}): ${errorText}`);
+      }
+
+      const openRouterBody = await openRouterRes.json() as {
+        choices?: Array<{
+          message?: {
+            content?: string;
+          };
+        }>;
       };
 
-      const result = await model.generateContent([
-        { text: systemPrompt + historyContext },
-        imagePart,
-        { text: `Student says: "${transcript}"` },
-      ]);
-
-      const response = result.response;
-      const raw = response.text?.() ?? "";
+      const raw = openRouterBody.choices?.[0]?.message?.content?.trim() ?? "";
       if (!raw) {
-        throw new Error("Gemini returned empty response");
+        throw new Error("OpenRouter returned empty response");
       }
       const clean = raw.replace(/```json\n?|```/g, "").trim();
       parsed = JSON.parse(clean);
@@ -119,8 +191,7 @@ export async function POST(request: NextRequest) {
           { status: 500 }
         );
       }
-      const historyMessages = conversationHistory
-        .slice(-8)
+      const historyMessages = normalizedConversation
         .map((t: ConversationTurn) => ({
           role: t.role as "user" | "assistant",
           content: t.content,
@@ -133,7 +204,6 @@ export async function POST(request: NextRequest) {
         messages: [
           { role: "system", content: systemPrompt },
           ...historyMessages,
-          { role: "user", content: `Student says: "${transcript}"` },
         ],
       });
 

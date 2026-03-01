@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useRef, useCallback, useEffect } from "react";
+import { useState, useRef, useCallback } from "react";
 import { createPortal } from "react-dom";
 import { DefaultStylePanel } from "tldraw";
 
@@ -12,11 +12,6 @@ export function DraggableStylePanel() {
   const [isOpen, setIsOpen] = useState(true);
   const [position, setPosition] = useState({ x: 16, y: 80 });
   const dragStart = useRef({ x: 0, y: 0, posX: 0, posY: 0 });
-  const [mounted, setMounted] = useState(false);
-
-  useEffect(() => {
-    setMounted(true);
-  }, []);
 
   const handlePointerDown = useCallback(
     (e: React.PointerEvent) => {
@@ -36,10 +31,10 @@ export function DraggableStylePanel() {
 
   const handlePointerMove = useCallback((e: React.PointerEvent) => {
     if (e.buttons !== 1) return;
-    setPosition((prev) => ({
+    setPosition({
       x: dragStart.current.posX + e.clientX - dragStart.current.x,
       y: dragStart.current.posY + e.clientY - dragStart.current.y,
-    }));
+    });
   }, []);
 
   const handlePointerUp = useCallback((e: React.PointerEvent) => {
@@ -95,6 +90,6 @@ export function DraggableStylePanel() {
     </div>
   );
 
-  if (!mounted || typeof document === "undefined") return null;
+  if (typeof document === "undefined") return null;
   return createPortal(panelContent, document.body);
 }

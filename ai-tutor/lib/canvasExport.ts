@@ -1,41 +1,51 @@
 // lib/canvasExport.ts
 // Two capture methods:
-//   Primary: tldraw's toImage — clean vector-quality PNG of all shapes
-//   Fallback: html2canvas on the container div — captures exact pixel view
+//   Primary: html2canvas on the container div — captures exact pixel view
+//   Fallback: tldraw's toImage — clean vector-quality PNG of all shapes
 //
-// We try tldraw first. If it fails or canvas is empty, fall back.
-// The fallback is actually MORE accurate for annotation coordinates
-// because it captures exactly what the user sees, pixel-for-pixel.
+// For AI annotation coordinates, the exact viewport matters more than vector cleanliness.
+// We therefore prefer html2canvas when a container ref is available and only fall back to
+// tldraw's export if the DOM capture fails.
 
 import type { RefObject } from "react";
 import { Editor } from "tldraw";
+
+export interface CanvasCaptureArea {
+  left_pct: number;
+  top_pct: number;
+  width_pct: number;
+  height_pct: number;
+}
 
 export interface CanvasExportResult {
   base64: string; // Raw base64, no "data:" prefix — ready for Groq image_url
   width: number;
   height: number;
   method: "tldraw" | "html2canvas";
+  captureArea?: CanvasCaptureArea;
+}
+
+function clampPercent(value: number) {
+  return Math.min(100, Math.max(0, value));
 }
 
 export async function exportCanvasAsBase64(
   editor: Editor,
   containerRef?: RefObject<HTMLDivElement | null>
 ): Promise<CanvasExportResult | null> {
-  // Try tldraw export first
-  try {
-    const result = await exportViaTldraw(editor);
-    if (result) return result;
-  } catch (err) {
-    console.warn("tldraw export failed, trying html2canvas:", err);
-  }
-
-  // Fallback to html2canvas
   if (containerRef?.current) {
     try {
       return await exportViaHtml2Canvas(containerRef.current);
     } catch (err) {
-      console.error("html2canvas also failed:", err);
+      console.warn("html2canvas export failed, trying tldraw:", err);
     }
+  }
+
+  try {
+    const result = await exportViaTldraw(editor);
+    if (result) return result;
+  } catch (err) {
+    console.error("tldraw export also failed:", err);
   }
 
   return null;
@@ -64,13 +74,17 @@ async function exportViaHtml2Canvas(
   container: HTMLDivElement
 ): Promise<CanvasExportResult | null> {
   const { default: html2canvas } = await import("html2canvas");
+  const captureElement = (container.querySelector(".tl-canvas") as HTMLElement | null) ?? container;
+  const containerRect = container.getBoundingClientRect();
+  const captureRect = captureElement.getBoundingClientRect();
 
-  const canvas = await html2canvas(container, {
+  const canvas = await html2canvas(captureElement, {
     useCORS: true,
     scale: 1,
     logging: false,
-    width: window.innerWidth,
-    height: window.innerHeight,
+    backgroundColor: "#ffffff",
+    width: Math.round(captureRect.width),
+    height: Math.round(captureRect.height),
   });
 
   const base64 = canvas.toDataURL("image/png").split(",")[1];
@@ -79,6 +93,12 @@ async function exportViaHtml2Canvas(
     width: canvas.width,
     height: canvas.height,
     method: "html2canvas",
+    captureArea: {
+      left_pct: clampPercent(((captureRect.left - containerRect.left) / containerRect.width) * 100),
+      top_pct: clampPercent(((captureRect.top - containerRect.top) / containerRect.height) * 100),
+      width_pct: clampPercent((captureRect.width / containerRect.width) * 100),
+      height_pct: clampPercent((captureRect.height / containerRect.height) * 100),
+    },
   };
 }
 
