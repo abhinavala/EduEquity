@@ -3,10 +3,9 @@ import Groq from "groq-sdk";
 import { ClaudeResponse, ConversationTurn, VisualElement, VisualPlan } from "@/lib/types";
 import { getTutorLanguage } from "@/lib/tutorLanguages";
 
-const groq = new Groq({ apiKey: process.env.GROQ_API_KEY });
-const OPENROUTER_URL = "https://openrouter.ai/api/v1/chat/completions";
-const OPENROUTER_VISION_MODEL = process.env.OPENROUTER_VISION_MODEL ?? "google/gemini-2.0-flash-001";
-const GROQ_CHAT_MODEL = "llama-3.3-70b-versatile";
+// Groq for main conversation (smart, follows instructions)
+const groq = process.env.GROQ_API_KEY ? new Groq({ apiKey: process.env.GROQ_API_KEY }) : null;
+const GROQ_MODEL = "llama-3.3-70b-versatile";
 const VISUAL_REQUEST_PATTERN =
   /\b(show|draw|graph|plot|visuali[sz]e|diagram|illustrate|demonstrate|generate (?:an )?image|create (?:an )?(?:image|diagram|visual)|sketch|map out|watch the board|let me see)\b/i;
 
@@ -183,14 +182,26 @@ function normalizeConversationHistory(
 
 function buildVisionMessages(systemPrompt: string, conversationHistory: ConversationTurn[], canvasImageBase64: string) {
   const latestUserTurn = conversationHistory[conversationHistory.length - 1];
-  const priorTurns = latestUserTurn?.role === "user" ? conversationHistory.slice(0, -1) : conversationHistory;
+  // Only include last 2 prior turns to save context space for the image
+  const priorTurns = (latestUserTurn?.role === "user" ? conversationHistory.slice(0, -1) : conversationHistory).slice(-2);
   const finalPrompt =
     latestUserTurn?.role === "user"
       ? latestUserTurn.content
       : "The student just spoke, but their latest message was missing. Ask a short clarifying question.";
 
+  // Use a shorter system prompt for vision to save tokens
+  const shortSystemPrompt = `You are a Socratic STEM tutor. Respond with JSON only:
+{
+  "type": "annotation" | "practice_problem" | "socratic_response",
+  "speech_text": "Short response under 60 words",
+  "annotation": { "x_pct": 0-100, "y_pct": 0-100, "width_pct": 0-100, "height_pct": 0-100 } | null,
+  "annotation_label": "Short label" | null,
+  "practice_problem": "Problem text" | null
+}
+Use "annotation" if checking work and there's an error to highlight. Use "practice_problem" if asked to create a problem. Otherwise use "socratic_response".`;
+
   return [
-    { role: "system", content: systemPrompt },
+    { role: "system", content: shortSystemPrompt },
     ...priorTurns.map((turn) => ({
       role: turn.role,
       content: turn.content,
@@ -448,27 +459,52 @@ async function generateStructuredDiagramFallback(
   conversationHistory: ConversationTurn[],
   languageCode?: string
 ): Promise<VisualPlan | null> {
-  if (!process.env.GROQ_API_KEY) return null;
-
   try {
-    const completion = await groq.chat.completions.create({
-      model: GROQ_CHAT_MODEL,
-      response_format: { type: "json_object" },
-      max_tokens: 1200,
-      messages: [
-        {
-          role: "system",
-          content: buildStructuredDiagramPrompt(transcript, courseMaterial, conversationHistory, languageCode),
-        },
-        {
-          role: "user",
-          content: "Generate the whiteboard diagram plan now.",
-        },
-      ],
-    });
+    const diagramPrompt = buildStructuredDiagramPrompt(transcript, courseMaterial, conversationHistory, languageCode);
 
-    const content = completion.choices[0]?.message?.content ?? "{}";
-    const parsed = JSON.parse(content);
+    let content: string;
+
+    if (groq) {
+      // Use Groq for better diagram generation
+      const completion = await groq.chat.completions.create({
+        model: GROQ_MODEL,
+        max_tokens: 1200,
+        response_format: { type: "json_object" },
+        messages: [
+          { role: "system", content: diagramPrompt },
+          { role: "user", content: "Generate the whiteboard diagram plan now." },
+        ],
+      });
+      content = completion.choices[0]?.message?.content ?? "{}";
+    } else {
+      // Fallback to local model
+      const controller = new AbortController();
+      const timeout = setTimeout(() => controller.abort(), 30000);
+
+      const res = await fetch(`${LOCAL_MODEL_URL}/chat/completions`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          model: LOCAL_TEXT_MODEL,
+          max_tokens: 1200,
+          messages: [
+            { role: "system", content: diagramPrompt },
+            { role: "user", content: "Generate the whiteboard diagram plan now." },
+          ],
+        }),
+        signal: controller.signal,
+      });
+
+      clearTimeout(timeout);
+      if (!res.ok) return null;
+
+      const body = await res.json() as {
+        choices?: Array<{ message?: { content?: string } }>;
+      };
+      content = body.choices?.[0]?.message?.content ?? "{}";
+    }
+
+    const parsed = extractJSON(content);
     const plan = normalizeVisualPlan(parsed);
     return plan?.kind === "structured_diagram" ? plan : null;
   } catch (error) {
@@ -517,26 +553,218 @@ function extractJSON(raw: string): Record<string, unknown> {
   return {};
 }
 
+// Detect if user asked for a NEW practice problem (not referencing existing problems)
+function looksLikePracticeProblemRequest(transcript: string, conversationHistory: ConversationTurn[]): boolean {
+  const currentTranscript = transcript.toLowerCase();
+
+  // EXCLUDE: If user is asking about an existing problem (problem 1, the problem, this problem)
+  // These are references, not requests for new problems
+  if (/\b(problem\s*\d+|the\s+problem|this\s+problem|that\s+problem|from\s+problem|in\s+problem)/i.test(currentTranscript)) {
+    return false;
+  }
+
+  // EXCLUDE: Visual/graph requests - these should be visual explanations, not practice problems
+  if (/\b(graph|draw|plot|sketch|show|visualize|diagram)/i.test(currentTranscript)) {
+    return false;
+  }
+
+  // EXCLUDE: Explanation requests
+  if (/\b(explain|help|understand|how do|what is|walk me through)/i.test(currentTranscript)) {
+    return false;
+  }
+
+  // Check current transcript for "put it on" requests (for a problem just mentioned)
+  if (/\bput (it|that) (on|onto) (the )?(board|screen|page|whiteboard|canvas)/i.test(currentTranscript)) {
+    return true;
+  }
+
+  // "give me a problem", "give me another problem", "new problem"
+  if (/\b(give me|can you give me|i want|i need|create|generate|make)\b.{0,15}\b(a |an |another |new |some )?(derivative|integral|math|calculus|algebra|similar\s+)?problem/i.test(currentTranscript)) {
+    return true;
+  }
+
+  // "another problem", "next problem", "new problem"
+  if (/\b(another|next|new|different)\s+(problem|exercise|question)/i.test(currentTranscript)) {
+    return true;
+  }
+
+  // "practice problem please", "a problem to solve"
+  if (/\b(practice\s+problem|problem\s+to\s+solve|problem\s+for\s+me)/i.test(currentTranscript)) {
+    return true;
+  }
+
+  return false;
+}
+
+// Extract a math problem from text (looks for equations, "find the derivative of", etc.)
+function extractProblemFromText(text: string): string | null {
+  // Look for LaTeX-style math: \( ... \) or $ ... $
+  const latexMatch = text.match(/\\\(\s*(.+?)\s*\\\)/) || text.match(/\$\s*(.+?)\s*\$/);
+
+  if (latexMatch) {
+    // Clean up LaTeX and format as a problem
+    let expr = latexMatch[1].trim();
+    // Remove f(x) = prefix if present, we'll add our own
+    expr = expr.replace(/^f\s*\(\s*x\s*\)\s*=\s*/i, "").trim();
+
+    if (/derivative/i.test(text)) {
+      return `Find the derivative of f(x) = ${expr}`;
+    }
+    if (/integral|integrate/i.test(text)) {
+      return `Evaluate the integral: ∫ ${expr} dx`;
+    }
+    return `Solve: f(x) = ${expr}`;
+  }
+
+  // Look for plain text "f(x) = ..." patterns
+  const funcMatch = text.match(/f\s*\(\s*x\s*\)\s*=\s*([x0-9\^\+\-\*\/\(\)\s]+)/i);
+  if (funcMatch) {
+    const expr = funcMatch[1].trim();
+    if (/derivative/i.test(text)) {
+      return `Find the derivative of f(x) = ${expr}`;
+    }
+    return `Solve: f(x) = ${expr}`;
+  }
+
+  // Look for "derivative of x^n" style
+  const simpleDerivMatch = text.match(/derivative of\s+([x0-9\^\+\-\*\/\(\)\s]+)/i);
+  if (simpleDerivMatch) {
+    return `Find the derivative of f(x) = ${simpleDerivMatch[1].trim()}`;
+  }
+
+  // Look for any expression with x and powers like "x^3", "4x^2", "x² + 3x"
+  const exprMatch = text.match(/(\d*x\s*[\^²³]?\s*\d*(?:\s*[+\-]\s*\d*x?\s*[\^²³]?\s*\d*)*)/i);
+  if (exprMatch && exprMatch[1].length > 1) {
+    const expr = exprMatch[1].trim();
+    if (/derivative/i.test(text)) {
+      return `Find the derivative of f(x) = ${expr}`;
+    }
+    if (/integral|integrate/i.test(text)) {
+      return `Evaluate the integral: ∫ ${expr} dx`;
+    }
+    return `Solve: f(x) = ${expr}`;
+  }
+
+  return null;
+}
+
+// Check if the raw LLM response mentions a problem even if not in JSON format
+function extractProblemFromRawResponse(rawText: string, transcript: string): { problem: string; speech: string } | null {
+  // If the model just said the problem conversationally, extract it
+  const problemPatterns = [
+    /(?:find|calculate|compute|evaluate|what is|determine)\s+(?:the\s+)?derivative\s+of\s+(.+?)(?:\?|$)/i,
+    /derivative\s+of\s+(.+?)(?:\?|\.|$)/i,
+    /(?:solve|simplify|evaluate)\s*:?\s*(.+?)(?:\?|\.|$)/i,
+    /(?:what do you think|what is)\s+(.+?)(?:\?|$)/i,
+  ];
+
+  for (const pattern of problemPatterns) {
+    const match = rawText.match(pattern);
+    if (match) {
+      const extracted = extractProblemFromText(match[0]);
+      if (extracted) {
+        return {
+          problem: extracted,
+          speech: "Here's a problem for you. Give it a try!"
+        };
+      }
+    }
+  }
+
+  // If the model mentioned an expression, try to extract it
+  const extracted = extractProblemFromText(rawText);
+  if (extracted) {
+    return {
+      problem: extracted,
+      speech: "Here's a problem for you. Give it a try!"
+    };
+  }
+
+  return null;
+}
+
 function normalizeResponse(
   parsed: Record<string, unknown>,
   transcript: string,
   courseMaterial: string,
-  conversationHistory: ConversationTurn[]
+  conversationHistory: ConversationTurn[],
+  rawLlmResponse?: string
 ): ClaudeResponse {
   const fallbackVisualPlan =
     detectIntegrationByPartsPlan(transcript, courseMaterial, conversationHistory) ??
     detectParabolaDerivativePlan(transcript, courseMaterial, conversationHistory);
-  const speech_text =
+
+  // Get speech text from parsed response or raw LLM text
+  let speech_text =
     typeof parsed.speech_text === "string" && parsed.speech_text.trim()
       ? parsed.speech_text.trim()
-      : "Let’s look at that together.";
-  const type =
+      : rawLlmResponse?.trim() || "Let's look at that together.";
+
+  let type =
     parsed.type === "annotation" ||
     parsed.type === "practice_problem" ||
     parsed.type === "socratic_response" ||
     parsed.type === "visual_explanation"
       ? parsed.type
       : "socratic_response";
+
+  let practice_problem =
+    typeof parsed.practice_problem === "string" && parsed.practice_problem.trim()
+      ? parsed.practice_problem.trim()
+      : null;
+
+  // Detect if user asked for a practice problem but model didn't set the type correctly
+  const wantsProblem = looksLikePracticeProblemRequest(transcript, conversationHistory);
+  console.log("Practice problem detection:", { wantsProblem, type, hasPracticeProblem: !!practice_problem, transcript: transcript.slice(0, 100) });
+
+  // FIX: Model often sets type="practice_problem" but puts problem in speech_text instead of practice_problem field
+  // Only do this if user actually asked for a problem
+  if (type === "practice_problem" && !practice_problem && speech_text && wantsProblem) {
+    // Extract the problem from speech_text - it's usually after "Here's a problem:" or similar
+    const problemMatch = speech_text.match(/(?:problem|exercise|question)[:\s]+(.+)/i) ||
+                         speech_text.match(/(?:Find|Solve|Calculate|Evaluate|Determine|Compute)[\s:]+(.+)/i);
+    if (problemMatch) {
+      practice_problem = problemMatch[1].trim();
+    } else {
+      // Just use the whole speech_text as the problem
+      practice_problem = speech_text.replace(/^(?:Sure!?|Here'?s?\s+(?:a\s+)?(?:similar\s+)?problem[:\s]*)/i, "").trim();
+    }
+    speech_text = "Here's a problem for you. Give it a try!";
+    console.log("Fixed practice_problem from speech_text:", { practice_problem });
+  }
+
+  // If model says practice_problem but user didn't ask for one, treat as socratic response
+  if (type === "practice_problem" && !wantsProblem) {
+    type = "socratic_response";
+    practice_problem = null;
+    console.log("Overriding practice_problem to socratic_response - user didn't ask for a problem");
+  }
+
+  if (wantsProblem && type === "socratic_response" && !practice_problem) {
+    // Try to extract the problem from the speech_text first
+    let extractedProblem = extractProblemFromText(speech_text);
+    console.log("Attempting to extract problem from speech_text:", { extractedProblem, speech_text: speech_text.slice(0, 200) });
+
+    // If that didn't work, try the raw LLM response
+    if (!extractedProblem && rawLlmResponse) {
+      const fromRaw = extractProblemFromRawResponse(rawLlmResponse, transcript);
+      if (fromRaw) {
+        extractedProblem = fromRaw.problem;
+        speech_text = fromRaw.speech;
+        console.log("Extracted from raw response:", fromRaw);
+      }
+    }
+
+    if (extractedProblem) {
+      type = "practice_problem";
+      practice_problem = extractedProblem;
+      // Clean up speech_text to be conversational
+      if (speech_text.includes("\\(") || speech_text.length > 100) {
+        speech_text = "Here's a problem for you. Give it a try!";
+      }
+      console.log("Converted to practice_problem:", { practice_problem, speech_text });
+    }
+  }
 
   const response: ClaudeResponse = {
     type,
@@ -549,10 +777,7 @@ function normalizeResponse(
       typeof parsed.annotation_label === "string" && parsed.annotation_label.trim()
         ? parsed.annotation_label.trim()
         : null,
-    practice_problem:
-      typeof parsed.practice_problem === "string" && parsed.practice_problem.trim()
-        ? parsed.practice_problem.trim()
-        : null,
+    practice_problem,
     visual_plan: normalizeVisualPlan(parsed.visual_plan),
   };
 
@@ -608,81 +833,152 @@ export async function POST(request: NextRequest) {
     const turnCount = normalizedConversation.length;
     const systemPrompt = buildSystemPrompt(courseMaterial, turnCount, languageCode);
 
-    let parsed: Record<string, unknown>;
+    let parsed: Record<string, unknown> | undefined;
+    let rawLlmResponse: string = "";
 
-    if (canvasImageBase64) {
+    // Try vision model if we have an image, but fall back to text-only if it fails
+    let useVision = !!canvasImageBase64;
+
+    if (useVision) {
       // Use local Qwen2.5-VL vision model for canvas analysis
-      const visionRes = await fetch(`${LOCAL_VISION_URL}/chat/completions`, {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-        },
-        body: JSON.stringify({
-          model: LOCAL_VISION_MODEL,
-          max_tokens: 1024,
-          messages: buildVisionMessages(systemPrompt, normalizedConversation, canvasImageBase64),
-        }),
-      });
+      const visionController = new AbortController();
+      const visionTimeout = setTimeout(() => visionController.abort(), 30000);
 
-      if (!visionRes.ok) {
-        const errorText = await visionRes.text();
-        throw new Error(`Local vision model request failed (${visionRes.status}): ${errorText}`);
+      let visionRes: Response;
+      try {
+        visionRes = await fetch(`${LOCAL_VISION_URL}/chat/completions`, {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+          },
+          body: JSON.stringify({
+            model: LOCAL_VISION_MODEL,
+            max_tokens: 512,
+            messages: buildVisionMessages(systemPrompt, normalizedConversation, canvasImageBase64),
+          }),
+          signal: visionController.signal,
+        });
+      } catch (fetchError) {
+        clearTimeout(visionTimeout);
+        console.warn("Vision model fetch failed, falling back to text-only:", fetchError);
+        useVision = false;
+        visionRes = null as unknown as Response;
       }
 
-      const visionBody = await visionRes.json() as {
-        choices?: Array<{
-          message?: {
-            content?: string;
-          };
-        }>;
-      };
+      if (visionRes) {
+        clearTimeout(visionTimeout);
 
-      const raw = visionBody.choices?.[0]?.message?.content?.trim() ?? "";
-      if (!raw) {
-        throw new Error("Local vision model returned empty response");
+        if (!visionRes.ok) {
+          const errorText = await visionRes.text();
+          // If it's a token limit error, fall back to text-only mode
+          if (visionRes.status === 400 && errorText.includes("max_tokens")) {
+            console.warn("Vision model token limit exceeded, falling back to text-only mode");
+            useVision = false;
+          } else {
+            throw new Error(`Local vision model request failed (${visionRes.status}): ${errorText}`);
+          }
+        }
       }
-      parsed = extractJSON(raw);
-    } else {
-      // Use local Qwen2.5 text model for text-only analysis
+
+      if (useVision && visionRes?.ok) {
+        const visionBody = await visionRes.json() as {
+          choices?: Array<{
+            message?: {
+              content?: string;
+            };
+          }>;
+        };
+
+        const rawLlmContent = visionBody.choices?.[0]?.message?.content?.trim() ?? "";
+        if (!rawLlmContent) {
+          throw new Error("Local vision model returned empty response");
+        }
+        console.log("Raw vision LLM response:", rawLlmContent.slice(0, 500));
+        parsed = extractJSON(rawLlmContent);
+        console.log("Parsed vision JSON:", JSON.stringify(parsed, null, 2).slice(0, 500));
+        rawLlmResponse = rawLlmContent;
+      }
+    }
+
+    // Use Groq (70B) for text understanding - much better at context and instructions
+    if (!useVision || !parsed) {
       const historyMessages = normalizedConversation
         .map((t: ConversationTurn) => ({
           role: t.role as "user" | "assistant",
           content: t.content,
         }));
 
-      const textRes = await fetch(`${LOCAL_MODEL_URL}/chat/completions`, {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-        },
-        body: JSON.stringify({
-          model: LOCAL_TEXT_MODEL,
+      if (groq) {
+        // Use Groq's Llama 70B - much smarter, follows instructions well
+        console.log("Using Groq for text analysis...");
+        const completion = await groq.chat.completions.create({
+          model: GROQ_MODEL,
           max_tokens: 1024,
+          response_format: { type: "json_object" },
           messages: [
             { role: "system", content: systemPrompt },
             ...historyMessages,
           ],
-        }),
-      });
+        });
 
-      if (!textRes.ok) {
-        const errorText = await textRes.text();
-        throw new Error(`Local text model request failed (${textRes.status}): ${errorText}`);
+        const content = completion.choices[0]?.message?.content ?? "{}";
+        console.log("Raw Groq response:", content.slice(0, 500));
+        parsed = extractJSON(content);
+        console.log("Parsed Groq JSON:", JSON.stringify(parsed, null, 2).slice(0, 500));
+        rawLlmResponse = content;
+      } else {
+        // Fallback to local model if no Groq API key
+        console.log("No GROQ_API_KEY, falling back to local model...");
+        const textController = new AbortController();
+        const textTimeout = setTimeout(() => textController.abort(), 30000);
+
+        let textRes: Response;
+        try {
+          textRes = await fetch(`${LOCAL_MODEL_URL}/chat/completions`, {
+            method: "POST",
+            headers: {
+              "Content-Type": "application/json",
+            },
+            body: JSON.stringify({
+              model: LOCAL_TEXT_MODEL,
+              max_tokens: 1024,
+              messages: [
+                { role: "system", content: systemPrompt },
+                ...historyMessages,
+              ],
+            }),
+            signal: textController.signal,
+          });
+        } catch (fetchError) {
+          clearTimeout(textTimeout);
+          console.error("Text model fetch failed:", fetchError);
+          throw new Error(`Cannot reach text model at ${LOCAL_MODEL_URL}: ${fetchError instanceof Error ? fetchError.message : "Network error"}`);
+        }
+        clearTimeout(textTimeout);
+
+        if (!textRes.ok) {
+          const errorText = await textRes.text();
+          throw new Error(`Local text model request failed (${textRes.status}): ${errorText}`);
+        }
+
+        const textBody = await textRes.json() as {
+          choices?: Array<{
+            message?: {
+              content?: string;
+            };
+          }>;
+        };
+
+        const content = textBody.choices?.[0]?.message?.content ?? "{}";
+        console.log("Raw local LLM response:", content.slice(0, 500));
+        parsed = extractJSON(content);
+        console.log("Parsed local JSON:", JSON.stringify(parsed, null, 2).slice(0, 500));
+        rawLlmResponse = content;
       }
-
-      const textBody = await textRes.json() as {
-        choices?: Array<{
-          message?: {
-            content?: string;
-          };
-        }>;
-      };
-
-      const content = textBody.choices?.[0]?.message?.content ?? "{}";
-      parsed = extractJSON(content);
     }
 
-    const normalized = normalizeResponse(parsed, transcript, courseMaterial, normalizedConversation);
+    const normalized = normalizeResponse(parsed ?? {}, transcript, courseMaterial, normalizedConversation, rawLlmResponse);
+    console.log("Normalized response:", JSON.stringify(normalized, null, 2));
     const visualRequest = looksLikeVisualRequest(transcript, normalizedConversation);
     const usesBuiltInDemo =
       normalized.visual_plan?.kind === "parabola_tangent_demo" ||
