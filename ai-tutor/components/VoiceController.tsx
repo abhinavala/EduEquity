@@ -17,13 +17,21 @@ declare global {
 
 interface VoiceControllerProps {
   onTranscriptReady: (transcript: string) => void;
+  onCreateVisual: () => void;
+  onToggleSpeechPause: () => void;
   isAiActive: boolean;
+  isSpeaking: boolean;
+  isSpeechPaused: boolean;
   language: TutorLanguageOption;
 }
 
 export default function VoiceController({
   onTranscriptReady,
+  onCreateVisual,
+  onToggleSpeechPause,
   isAiActive,
+  isSpeaking,
+  isSpeechPaused,
   language,
 }: VoiceControllerProps) {
   const [isListening, setIsListening] = useState(false);
@@ -123,6 +131,35 @@ export default function VoiceController({
 
   return (
     <div className="absolute bottom-8 left-1/2 -translate-x-1/2 z-[100] flex flex-col items-center gap-3">
+      <div className="flex items-center gap-2 rounded-full bg-white/90 px-3 py-2 shadow-xl backdrop-blur">
+        <button
+          type="button"
+          onClick={onCreateVisual}
+          disabled={isAiActive}
+          title={ui.createVisualTitle}
+          className={`rounded-full px-4 py-2 text-xs font-semibold transition ${
+            isAiActive
+              ? "cursor-not-allowed bg-slate-200 text-slate-400"
+              : "bg-slate-900 text-white hover:bg-slate-700"
+          }`}
+        >
+          {ui.createVisual}
+        </button>
+
+        <button
+          type="button"
+          onClick={onToggleSpeechPause}
+          disabled={!isSpeaking}
+          className={`rounded-full px-4 py-2 text-xs font-semibold transition ${
+            isSpeaking
+              ? "bg-blue-100 text-blue-700 hover:bg-blue-200"
+              : "cursor-not-allowed bg-slate-200 text-slate-400"
+          }`}
+        >
+          {isSpeechPaused ? ui.resumeExplanation : ui.pauseExplanation}
+        </button>
+      </div>
+
       <button
         type="button"
         onMouseDown={startListening}

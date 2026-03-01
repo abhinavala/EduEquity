@@ -8,7 +8,13 @@ import CourseMaterialSidebar from "@/components/CourseMaterialSidebar";
 import VoiceController from "@/components/VoiceController";
 import { CanvasCaptureArea, exportCanvasAsBase64 } from "@/lib/canvasExport";
 import { refineAnnotationForCanvas } from "@/lib/annotationRefinement";
-import { speakText, speakTextFallback } from "@/lib/elevenlabs";
+import {
+  getSpeechPlaybackState,
+  speakText,
+  speakTextFallback,
+  subscribeToSpeechPlayback,
+  toggleSpeechPlaybackPause,
+} from "@/lib/elevenlabs";
 import {
   AnnotationBox,
   ClaudeResponse,
@@ -123,6 +129,7 @@ function insertBoardMaterialEntry(
       type: "image" as const,
       x: startX,
       y: nextY,
+      isLocked: true,
       opacity: 1,
       props: {
         assetId,
@@ -160,6 +167,7 @@ export default function SessionWrapper({ initialCourseMaterial = "" }: SessionWr
   const [annotationCount, setAnnotationCount] = useState(0);
   const [practiceProblemCount, setPracticeProblemCount] = useState(0);
   const [visualAidCount, setVisualAidCount] = useState(0);
+  const [speechPlaybackState, setSpeechPlaybackState] = useState(() => getSpeechPlaybackState());
   const [editor, setEditor] = useState<Editor | null>(null);
   const [uploadedMaterials, setUploadedMaterials] = useState<UploadedMaterialEntry[]>([]);
   const [selectedLanguageCode, setSelectedLanguageCode] = useState<TutorLanguageCode>(
@@ -202,6 +210,10 @@ export default function SessionWrapper({ initialCourseMaterial = "" }: SessionWr
     document.documentElement.dir = selectedLanguage.direction;
   }, [selectedLanguage.direction, selectedLanguage.recognitionLocale]);
 
+  useEffect(() => {
+    return subscribeToSpeechPlayback(setSpeechPlaybackState);
+  }, []);
+
   const handleEditorReady = useCallback((editor: Editor) => {
     editorRef.current = editor;
     setEditor(editor);
@@ -224,13 +236,18 @@ export default function SessionWrapper({ initialCourseMaterial = "" }: SessionWr
     for (const [entryId, inserted] of insertedBoardMaterialsRef.current.entries()) {
       if (displayedEntryIds.has(entryId)) continue;
 
-      if (inserted.shapeIds.length > 0) {
-        editor.deleteShapes(inserted.shapeIds);
-      }
+      editor.run(
+        () => {
+          if (inserted.shapeIds.length > 0) {
+            editor.deleteShapes(inserted.shapeIds);
+          }
 
-      if (inserted.assetIds.length > 0) {
-        editor.deleteAssets(inserted.assetIds);
-      }
+          if (inserted.assetIds.length > 0) {
+            editor.deleteAssets(inserted.assetIds);
+          }
+        },
+        { ignoreShapeLock: true }
+      );
 
       insertedBoardMaterialsRef.current.delete(entryId);
     }
@@ -257,7 +274,7 @@ export default function SessionWrapper({ initialCourseMaterial = "" }: SessionWr
     boardInsertionCursorRef.current = nextY;
   }, [editor, uploadedMaterials]);
 
-  const handleTranscript = useCallback(
+  const runTutorTurn = useCallback(
     async (transcript: string) => {
       if (!editorRef.current || isCanvasLocked) return;
 
@@ -356,6 +373,26 @@ export default function SessionWrapper({ initialCourseMaterial = "" }: SessionWr
     [isCanvasLocked, selectedLanguage.code, selectedLanguage.recognitionLocale, selectedLanguageCode, ui.checkThis, ui.thinking, ui.tryAgain]
   );
 
+  const handleTranscript = useCallback(
+    (transcript: string) => {
+      void runTutorTurn(transcript);
+    },
+    [runTutorTurn]
+  );
+
+  const handleCreateVisual = useCallback(() => {
+    const latestUserTurn = [...conversationRef.current].reverse().find((turn) => turn.role === "user");
+    const visualPrompt = latestUserTurn
+      ? `Create a visual explanation on the whiteboard for my most recent question: "${latestUserTurn.content}". Base it on what we are discussing right now.`
+      : "Create a visual explanation on the whiteboard for the current problem or drawing in front of us.";
+
+    void runTutorTurn(visualPrompt);
+  }, [runTutorTurn]);
+
+  const handleToggleSpeechPause = useCallback(() => {
+    toggleSpeechPlaybackPause();
+  }, []);
+
   return (
     <main className="relative w-full h-screen overflow-hidden bg-white">
       <div ref={canvasContainerRef} className="absolute inset-0">
@@ -398,7 +435,11 @@ export default function SessionWrapper({ initialCourseMaterial = "" }: SessionWr
 
       <VoiceController
         onTranscriptReady={handleTranscript}
+        onCreateVisual={handleCreateVisual}
+        onToggleSpeechPause={handleToggleSpeechPause}
         isAiActive={isCanvasLocked}
+        isSpeaking={sessionState === "speaking" && speechPlaybackState.isSpeaking}
+        isSpeechPaused={speechPlaybackState.isPaused}
         language={selectedLanguage}
       />
 

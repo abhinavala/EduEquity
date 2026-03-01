@@ -15,6 +15,79 @@ interface SpeakTextOptions {
   languageLocale?: string;
 }
 
+interface SpeechPlaybackState {
+  isSpeaking: boolean;
+  isPaused: boolean;
+}
+
+const playbackListeners = new Set<(state: SpeechPlaybackState) => void>();
+let playbackState: SpeechPlaybackState = {
+  isSpeaking: false,
+  isPaused: false,
+};
+let activeAudio: HTMLAudioElement | null = null;
+let activeUtterance: SpeechSynthesisUtterance | null = null;
+
+function emitPlaybackState(nextState: SpeechPlaybackState) {
+  playbackState = nextState;
+  playbackListeners.forEach((listener) => listener(playbackState));
+}
+
+function clearPlaybackState() {
+  activeAudio = null;
+  activeUtterance = null;
+  emitPlaybackState({
+    isSpeaking: false,
+    isPaused: false,
+  });
+}
+
+export function getSpeechPlaybackState() {
+  return playbackState;
+}
+
+export function subscribeToSpeechPlayback(listener: (state: SpeechPlaybackState) => void) {
+  playbackListeners.add(listener);
+  listener(playbackState);
+
+  return () => {
+    playbackListeners.delete(listener);
+  };
+}
+
+export function toggleSpeechPlaybackPause() {
+  if (activeAudio) {
+    if (activeAudio.paused) {
+      void activeAudio.play()
+        .then(() => {
+          emitPlaybackState({ isSpeaking: true, isPaused: false });
+        })
+        .catch(() => {
+          emitPlaybackState({ isSpeaking: true, isPaused: true });
+        });
+      return false;
+    }
+
+    activeAudio.pause();
+    emitPlaybackState({ isSpeaking: true, isPaused: true });
+    return true;
+  }
+
+  if (window.speechSynthesis && activeUtterance) {
+    if (window.speechSynthesis.paused) {
+      window.speechSynthesis.resume();
+      emitPlaybackState({ isSpeaking: true, isPaused: false });
+      return false;
+    }
+
+    window.speechSynthesis.pause();
+    emitPlaybackState({ isSpeaking: true, isPaused: true });
+    return true;
+  }
+
+  return false;
+}
+
 function findBrowserVoice(languageLocale?: string) {
   if (!languageLocale || !window.speechSynthesis) return null;
 
@@ -95,23 +168,44 @@ export async function speakText(text: string, options: SpeakTextOptions = {}): P
   const audioBlob = await response.blob();
   const audioUrl = URL.createObjectURL(audioBlob);
   const audio = new Audio(audioUrl);
+  activeAudio = audio;
+  activeUtterance = null;
+  emitPlaybackState({
+    isSpeaking: true,
+    isPaused: false,
+  });
 
   return new Promise((resolve, reject) => {
+    audio.onplay = () => {
+      emitPlaybackState({ isSpeaking: true, isPaused: false });
+    };
+
+    audio.onpause = () => {
+      if (audio.ended) return;
+      emitPlaybackState({ isSpeaking: true, isPaused: true });
+    };
+
     // ── THIS IS THE CRITICAL CALLBACK ──────────────────────────────
     // The canvas unlock (setSessionState("idle")) fires AFTER this.
     // Do not resolve() earlier — the student must hear the full question
     // before they can touch the canvas again.
     audio.onended = () => {
       URL.revokeObjectURL(audioUrl);
+      clearPlaybackState();
       resolve();
     };
 
     audio.onerror = () => {
       URL.revokeObjectURL(audioUrl);
+      clearPlaybackState();
       reject(new Error("Audio playback failed"));
     };
 
-    audio.play();
+    void audio.play().catch((error) => {
+      URL.revokeObjectURL(audioUrl);
+      clearPlaybackState();
+      reject(error);
+    });
   });
 }
 
@@ -125,6 +219,12 @@ export function speakTextFallback(text: string, options: SpeakTextOptions = {}):
 
     window.speechSynthesis.cancel();
     const utterance = new SpeechSynthesisUtterance(text);
+    activeAudio = null;
+    activeUtterance = utterance;
+    emitPlaybackState({
+      isSpeaking: true,
+      isPaused: false,
+    });
     if (options.languageLocale) {
       utterance.lang = options.languageLocale;
     }
@@ -134,8 +234,16 @@ export function speakTextFallback(text: string, options: SpeakTextOptions = {}):
     }
     utterance.rate = 0.9;
     utterance.pitch = 1.0;
-    utterance.onend = () => resolve();
-    utterance.onerror = () => resolve(); // always resolve — canvas must unlock
+    utterance.onpause = () => emitPlaybackState({ isSpeaking: true, isPaused: true });
+    utterance.onresume = () => emitPlaybackState({ isSpeaking: true, isPaused: false });
+    utterance.onend = () => {
+      clearPlaybackState();
+      resolve();
+    };
+    utterance.onerror = () => {
+      clearPlaybackState();
+      resolve();
+    }; // always resolve — canvas must unlock
     window.speechSynthesis.speak(utterance);
   });
 }

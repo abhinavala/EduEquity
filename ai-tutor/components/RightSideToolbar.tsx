@@ -128,10 +128,9 @@ function StylePanelButton() {
     () => editor.isInAny("hand", "zoom", "eraser", "laser"),
     [editor]
   );
-  const triggerRef = useRef<HTMLDivElement>(null);
   const [isOpen, setIsOpen] = useState(false);
   const [isMinimized, setIsMinimized] = useState(false);
-  const [position, setPosition] = useState({ x: 124, y: 110 });
+  const [position, setPosition] = useState({ x: 24, y: 96 });
 
   const theme = getDefaultColorTheme({ isDarkMode });
   const currentColor =
@@ -141,20 +140,14 @@ function StylePanelButton() {
   const currentSize = size?.type === "shared" ? size.value : "m";
 
   function handleTogglePanel() {
-    if (!isOpen && triggerRef.current) {
-      const rect = triggerRef.current.getBoundingClientRect();
-      setPosition({
-        x: Math.max(16, rect.right + 16),
-        y: Math.max(16, rect.top - 24),
-      });
-      setIsMinimized(false);
-      editor.updateInstanceState({ isChangingStyle: true });
-      setIsOpen(true);
-      return;
-    }
-
-    editor.updateInstanceState({ isChangingStyle: false });
-    setIsOpen((value) => !value);
+    setIsOpen((value) => {
+      const nextValue = !value;
+      editor.updateInstanceState({ isChangingStyle: nextValue });
+      if (nextValue) {
+        setIsMinimized(false);
+      }
+      return nextValue;
+    });
   }
 
   function handleMinimizeToggle() {
@@ -163,22 +156,20 @@ function StylePanelButton() {
 
   return (
     <>
-      <div ref={triggerRef}>
-        <TldrawUiToolbarButton
-          type="icon"
-          data-testid="eduequity-style-menu.button"
-          title={msg("style-panel.title")}
-          disabled={disableStylePanel}
-          onClick={handleTogglePanel}
-        >
-          <div className="eduequity-style-trigger">
-            <PencilPreviewIcon
-              color={disableStylePanel ? "var(--tl-color-muted-1)" : currentColor}
-              size={currentSize}
-            />
-          </div>
-        </TldrawUiToolbarButton>
-      </div>
+      <TldrawUiToolbarButton
+        type="icon"
+        data-testid="eduequity-style-menu.button"
+        title={msg("style-panel.title")}
+        disabled={disableStylePanel}
+        onClick={handleTogglePanel}
+      >
+        <div className="eduequity-style-trigger">
+          <PencilPreviewIcon
+            color={disableStylePanel ? "var(--tl-color-muted-1)" : currentColor}
+            size={currentSize}
+          />
+        </div>
+      </TldrawUiToolbarButton>
 
       <FloatingStylePanel
         isOpen={isOpen}

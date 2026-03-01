@@ -57,6 +57,10 @@ export interface UiCopy {
   contextOnly: string;
   courseFileModeDisplayed: string;
   courseFileModeContextOnly: string;
+  createVisual: string;
+  createVisualTitle: string;
+  pauseExplanation: string;
+  resumeExplanation: string;
 }
 
 function pluralize(count: number, one: string, many: string) {
@@ -121,6 +125,10 @@ const EN: UiCopy = {
   contextOnly: "Context only",
   courseFileModeDisplayed: "This file is visible on the whiteboard and also used as tutor context.",
   courseFileModeContextOnly: "This file is kept as tutor context only and is hidden from the whiteboard.",
+  createVisual: "Create visual",
+  createVisualTitle: "Create a visual explanation for the current problem",
+  pauseExplanation: "Pause AI",
+  resumeExplanation: "Resume AI",
 };
 
 const ES: UiCopy = {
@@ -187,6 +195,10 @@ const ES: UiCopy = {
   contextOnly: "Solo contexto",
   courseFileModeDisplayed: "Este archivo aparece en la pizarra y también se usa como contexto del tutor.",
   courseFileModeContextOnly: "Este archivo se conserva solo como contexto del tutor y no aparece en la pizarra.",
+  createVisual: "Crear visual",
+  createVisualTitle: "Crear una explicación visual para el problema actual",
+  pauseExplanation: "Pausar IA",
+  resumeExplanation: "Reanudar IA",
 };
 
 const VI: UiCopy = {
@@ -253,6 +265,10 @@ const VI: UiCopy = {
   contextOnly: "Chỉ làm ngữ cảnh",
   courseFileModeDisplayed: "Tệp này xuất hiện trên bảng trắng và cũng được dùng làm ngữ cảnh cho gia sư.",
   courseFileModeContextOnly: "Tệp này chỉ được giữ làm ngữ cảnh cho gia sư và không hiện trên bảng trắng.",
+  createVisual: "Tạo hình minh họa",
+  createVisualTitle: "Tạo lời giải thích trực quan cho bài hiện tại",
+  pauseExplanation: "Tạm dừng AI",
+  resumeExplanation: "Tiếp tục AI",
 };
 
 const FIL: UiCopy = {
@@ -319,6 +335,10 @@ const FIL: UiCopy = {
   contextOnly: "Context lang",
   courseFileModeDisplayed: "Ipinapakita ang file na ito sa whiteboard at ginagamit din bilang context ng tutor.",
   courseFileModeContextOnly: "Pinananatili ang file na ito bilang context lang ng tutor at hindi ipinapakita sa whiteboard.",
+  createVisual: "Gumawa ng visual",
+  createVisualTitle: "Gumawa ng visual na paliwanag para sa kasalukuyang problema",
+  pauseExplanation: "I-pause ang AI",
+  resumeExplanation: "Ipagpatuloy ang AI",
 };
 
 const AR: UiCopy = {
@@ -385,6 +405,10 @@ const AR: UiCopy = {
   contextOnly: "سياق فقط",
   courseFileModeDisplayed: "هذا الملف ظاهر على اللوحة البيضاء ويُستخدم أيضًا كسياق للمعلم.",
   courseFileModeContextOnly: "يتم الاحتفاظ بهذا الملف كسياق للمعلم فقط وهو مخفي من اللوحة البيضاء.",
+  createVisual: "أنشئ رسماً",
+  createVisualTitle: "أنشئ شرحاً بصرياً للمسألة الحالية",
+  pauseExplanation: "إيقاف المعلم",
+  resumeExplanation: "متابعة المعلم",
 };
 
 const FR: UiCopy = {
@@ -451,6 +475,10 @@ const FR: UiCopy = {
   contextOnly: "Contexte seul",
   courseFileModeDisplayed: "Ce fichier est visible sur le tableau blanc et sert aussi de contexte au tuteur.",
   courseFileModeContextOnly: "Ce fichier est conservé uniquement comme contexte pour le tuteur et reste masqué sur le tableau blanc.",
+  createVisual: "Créer un visuel",
+  createVisualTitle: "Créer une explication visuelle pour le problème actuel",
+  pauseExplanation: "Pause IA",
+  resumeExplanation: "Reprendre l’IA",
 };
 
 const PT: UiCopy = {
@@ -517,6 +545,10 @@ const PT: UiCopy = {
   contextOnly: "Só contexto",
   courseFileModeDisplayed: "Este arquivo fica visível no quadro branco e também é usado como contexto do tutor.",
   courseFileModeContextOnly: "Este arquivo é mantido apenas como contexto do tutor e fica oculto no quadro branco.",
+  createVisual: "Criar visual",
+  createVisualTitle: "Criar uma explicação visual para o problema atual",
+  pauseExplanation: "Pausar IA",
+  resumeExplanation: "Retomar IA",
 };
 
 const HI: UiCopy = {
@@ -583,6 +615,10 @@ const HI: UiCopy = {
   contextOnly: "सिर्फ संदर्भ",
   courseFileModeDisplayed: "यह फ़ाइल व्हाइटबोर्ड पर दिखाई देती है और ट्यूटर संदर्भ के रूप में भी उपयोग होती है।",
   courseFileModeContextOnly: "यह फ़ाइल केवल ट्यूटर संदर्भ के लिए रखी जाती है और व्हाइटबोर्ड पर नहीं दिखाई जाती।",
+  createVisual: "दृश्य बनाएँ",
+  createVisualTitle: "मौजूदा प्रश्न के लिए दृश्य व्याख्या बनाएँ",
+  pauseExplanation: "एआई रोकें",
+  resumeExplanation: "एआई फिर चालू करें",
 };
 
 const ZH: UiCopy = {
@@ -647,6 +683,10 @@ const ZH: UiCopy = {
   contextOnly: "仅作上下文",
   courseFileModeDisplayed: "该文件会显示在白板上，同时也会作为导师回答时的上下文。",
   courseFileModeContextOnly: "该文件仅保留为导师上下文，不会显示在白板上。",
+  createVisual: "生成图示",
+  createVisualTitle: "为当前问题生成可视化讲解",
+  pauseExplanation: "暂停 AI",
+  resumeExplanation: "继续 AI",
 };
 
 const KO: UiCopy = {
@@ -713,6 +753,10 @@ const KO: UiCopy = {
   contextOnly: "문맥만 사용",
   courseFileModeDisplayed: "이 파일은 화이트보드에 표시되고 튜터 문맥으로도 사용됩니다.",
   courseFileModeContextOnly: "이 파일은 튜터 문맥으로만 유지되며 화이트보드에는 표시되지 않습니다.",
+  createVisual: "시각 자료 만들기",
+  createVisualTitle: "현재 문제에 대한 시각 설명 만들기",
+  pauseExplanation: "AI 일시정지",
+  resumeExplanation: "AI 다시 시작",
 };
 
 const UI_COPY: Record<TutorLanguageCode, UiCopy> = {
