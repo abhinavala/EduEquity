@@ -9,6 +9,8 @@ import { getUiCopy } from "@/lib/uiTranslations";
 interface CourseMaterialSidebarProps {
   onCourseMaterialChange: (courseMaterial: string) => void;
   onMaterialEntriesChange: (entries: UploadedMaterialEntry[]) => void;
+  onFillBoardEntry: (entryId: string) => void;
+  onCenterBoardEntry: (entryId: string) => void;
   selectedLanguageCode: TutorLanguageCode;
   onLanguageChange: (languageCode: TutorLanguageCode) => void;
   conversationHistory: ConversationTurn[];
@@ -66,6 +68,8 @@ function formatDuration(elapsedMs: number, formatMinutes: (count: number) => str
 export default function CourseMaterialSidebar({
   onCourseMaterialChange,
   onMaterialEntriesChange,
+  onFillBoardEntry,
+  onCenterBoardEntry,
   selectedLanguageCode,
   onLanguageChange,
   conversationHistory,
@@ -428,6 +432,28 @@ export default function CourseMaterialSidebar({
                               aria-label={`${entry.displayOnBoard ? ui.showingOnBoard : ui.contextOnly} — ${entry.name}`}
                             >
                               {entry.displayOnBoard ? ui.showingOnBoard : ui.contextOnly}
+                            </button>
+                          )}
+                          {entry.boardPages.length > 0 && entry.displayOnBoard && (
+                            <button
+                              type="button"
+                              onClick={() => onCenterBoardEntry(entry.id)}
+                              className="rounded-full bg-slate-200 px-2.5 py-1 text-[11px] font-semibold text-slate-700 transition hover:bg-slate-300"
+                              aria-label={`${ui.centerPage} — ${entry.name}`}
+                              title={ui.centerPageTitle}
+                            >
+                              {ui.centerPage}
+                            </button>
+                          )}
+                          {entry.boardPages.length > 0 && entry.displayOnBoard && (
+                            <button
+                              type="button"
+                              onClick={() => onFillBoardEntry(entry.id)}
+                              className="rounded-full bg-slate-900 px-2.5 py-1 text-[11px] font-semibold text-white transition hover:bg-slate-700"
+                              aria-label={`${ui.fillPage} — ${entry.name}`}
+                              title={ui.fillPageTitle}
+                            >
+                              {ui.fillPage}
                             </button>
                           )}
                           <button

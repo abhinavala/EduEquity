@@ -86,14 +86,114 @@ function buildAssetId(entryId: string, pageId: string, dataUrl: string) {
   return AssetRecordType.createId(getHashForString(`${entryId}:${pageId}:${dataUrl}`));
 }
 
+function getPrimaryShapeBounds(editor: Editor, shapeIds: TLShapeId[]) {
+  if (shapeIds.length === 0) return null;
+
+  const bounds = editor.getShapePageBounds(shapeIds[0]);
+  if (!bounds) return null;
+
+  return {
+    x: bounds.x,
+    y: bounds.y,
+    w: Math.max(1, bounds.w),
+    h: Math.max(1, bounds.h),
+  };
+}
+
+function getBoardPageLayout(
+  viewport: ReturnType<Editor["getViewportPageBounds"]>,
+  assetWidth: number,
+  assetHeight: number,
+  y: number
+) {
+  const horizontalPadding = 56;
+  const verticalPadding = 88;
+  const availableWidth = Math.max(320, viewport.width - horizontalPadding * 2);
+  const availableHeight = Math.max(320, viewport.height - verticalPadding * 2);
+  const scale = Math.max(
+    0.05,
+    Math.min(availableWidth / Math.max(assetWidth, 1), availableHeight / Math.max(assetHeight, 1))
+  );
+  const w = Math.max(260, assetWidth * scale);
+  const h = Math.max(320, assetHeight * scale);
+
+  return {
+    x: viewport.midX - w / 2,
+    y,
+    w,
+    h,
+  };
+}
+
+function centerBoardMaterial(editor: Editor, shapeIds: TLShapeId[]) {
+  const bounds = getPrimaryShapeBounds(editor, shapeIds);
+  if (!bounds) return;
+
+  editor.centerOnPoint(
+    {
+      x: bounds.x + bounds.w / 2,
+      y: bounds.y + bounds.h / 2,
+    },
+    { animation: { duration: 280 } }
+  );
+}
+
+function fitBoardMaterialPages(editor: Editor, inserted: InsertedBoardMaterial) {
+  const viewport = editor.getViewportPageBounds();
+  let nextY = viewport.minY + 88;
+  const updates: Array<Parameters<Editor["updateShapes"]>[0][number]> = [];
+
+  for (let index = 0; index < inserted.shapeIds.length; index += 1) {
+    const shapeId = inserted.shapeIds[index];
+    const assetId = inserted.assetIds[index];
+    const asset = editor.getAsset(assetId);
+    const imageProps = asset?.type === "image" ? asset.props : null;
+    const assetWidth = typeof imageProps?.w === "number" ? imageProps.w : 1;
+    const assetHeight = typeof imageProps?.h === "number" ? imageProps.h : 1;
+    const layout = getBoardPageLayout(viewport, assetWidth, assetHeight, nextY);
+
+    updates.push({
+      id: shapeId,
+      type: "image",
+      x: layout.x,
+      y: layout.y,
+      props: {
+        w: layout.w,
+        h: layout.h,
+      },
+    });
+
+    nextY += layout.h + 40;
+  }
+
+  if (updates.length === 0) return;
+
+  editor.run(
+    () => {
+      editor.updateShapes(updates);
+    },
+    { ignoreShapeLock: true }
+  );
+}
+
+function fillBoardMaterial(editor: Editor, inserted: InsertedBoardMaterial) {
+  fitBoardMaterialPages(editor, inserted);
+
+  const bounds = getPrimaryShapeBounds(editor, inserted.shapeIds);
+  if (!bounds) return;
+
+  editor.zoomToBounds(bounds, {
+    inset: 24,
+    animation: { duration: 320 },
+  });
+}
+
 function insertBoardMaterialEntry(
   editor: Editor,
   entry: UploadedMaterialEntry,
   startY: number
 ): { inserted: InsertedBoardMaterial; nextY: number } {
   const viewport = editor.getViewportPageBounds();
-  const maxWidth = Math.min(Math.max(viewport.width * 0.58, 520), 860);
-  const startX = viewport.minX + 72;
   let nextY = startY;
   const shapeIds: TLShapeId[] = [];
   const assetIds: TLAssetId[] = [];
@@ -103,9 +203,7 @@ function insertBoardMaterialEntry(
   for (const page of entry.boardPages) {
     const assetId = buildAssetId(entry.id, page.id, page.dataUrl);
     const shapeId = createShapeId();
-    const scale = Math.min(1, maxWidth / Math.max(page.width, 1));
-    const shapeWidth = Math.max(260, page.width * scale);
-    const shapeHeight = Math.max(320, page.height * scale);
+    const layout = getBoardPageLayout(viewport, page.width, page.height, nextY);
 
     assetIds.push(assetId);
     shapeIds.push(shapeId);
@@ -127,18 +225,18 @@ function insertBoardMaterialEntry(
     shapesToCreate.push({
       id: shapeId,
       type: "image" as const,
-      x: startX,
-      y: nextY,
+      x: layout.x,
+      y: layout.y,
       isLocked: true,
       opacity: 1,
       props: {
         assetId,
-        w: shapeWidth,
-        h: shapeHeight,
+        w: layout.w,
+        h: layout.h,
       },
     });
 
-    nextY += shapeHeight + 28;
+    nextY += layout.h + 40;
   }
 
   editor.run(() => {
@@ -256,6 +354,7 @@ export default function SessionWrapper({ initialCourseMaterial = "" }: SessionWr
       boardInsertionCursorRef.current = null;
     }
 
+    const newlyInsertedShapeIds: TLShapeId[] = [];
     let nextY = boardInsertionCursorRef.current ?? editor.getViewportPageBounds().minY + 104;
     for (const entry of uploadedMaterials) {
       if (
@@ -268,10 +367,15 @@ export default function SessionWrapper({ initialCourseMaterial = "" }: SessionWr
 
       const result = insertBoardMaterialEntry(editor, entry, nextY);
       insertedBoardMaterialsRef.current.set(entry.id, result.inserted);
+      newlyInsertedShapeIds.push(...result.inserted.shapeIds);
       nextY = result.nextY;
     }
 
     boardInsertionCursorRef.current = nextY;
+
+    if (newlyInsertedShapeIds.length > 0) {
+      centerBoardMaterial(editor, newlyInsertedShapeIds);
+    }
   }, [editor, uploadedMaterials]);
 
   const runTutorTurn = useCallback(
@@ -393,6 +497,26 @@ export default function SessionWrapper({ initialCourseMaterial = "" }: SessionWr
     toggleSpeechPlaybackPause();
   }, []);
 
+  const handleFillBoardEntry = useCallback((entryId: string) => {
+    const currentEditor = editorRef.current;
+    if (!currentEditor) return;
+
+    const inserted = insertedBoardMaterialsRef.current.get(entryId);
+    if (!inserted || inserted.shapeIds.length === 0) return;
+
+    fillBoardMaterial(currentEditor, inserted);
+  }, []);
+
+  const handleCenterBoardEntry = useCallback((entryId: string) => {
+    const currentEditor = editorRef.current;
+    if (!currentEditor) return;
+
+    const inserted = insertedBoardMaterialsRef.current.get(entryId);
+    if (!inserted || inserted.shapeIds.length === 0) return;
+
+    centerBoardMaterial(currentEditor, inserted.shapeIds);
+  }, []);
+
   return (
     <main className="relative w-full h-screen overflow-hidden bg-white">
       <div ref={canvasContainerRef} className="absolute inset-0">
@@ -406,6 +530,8 @@ export default function SessionWrapper({ initialCourseMaterial = "" }: SessionWr
       <CourseMaterialSidebar
         onCourseMaterialChange={handleCourseMaterialChange}
         onMaterialEntriesChange={handleMaterialEntriesChange}
+        onFillBoardEntry={handleFillBoardEntry}
+        onCenterBoardEntry={handleCenterBoardEntry}
         selectedLanguageCode={selectedLanguageCode}
         onLanguageChange={setSelectedLanguageCode}
         conversationHistory={conversationHistory}
