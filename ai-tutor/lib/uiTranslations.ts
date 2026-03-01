@@ -61,6 +61,10 @@ export interface UiCopy {
   createVisualTitle: string;
   pauseExplanation: string;
   resumeExplanation: string;
+  centerPage: string;
+  centerPageTitle: string;
+  fillPage: string;
+  fillPageTitle: string;
 }
 
 function pluralize(count: number, one: string, many: string) {
@@ -129,6 +133,10 @@ const EN: UiCopy = {
   createVisualTitle: "Create a visual explanation for the current problem",
   pauseExplanation: "Pause AI",
   resumeExplanation: "Resume AI",
+  centerPage: "Center",
+  centerPageTitle: "Move this board file back to the center",
+  fillPage: "Fill page",
+  fillPageTitle: "Make this board file fill the whiteboard",
 };
 
 const ES: UiCopy = {
@@ -199,6 +207,10 @@ const ES: UiCopy = {
   createVisualTitle: "Crear una explicación visual para el problema actual",
   pauseExplanation: "Pausar IA",
   resumeExplanation: "Reanudar IA",
+  centerPage: "Centrar",
+  centerPageTitle: "Volver a centrar este archivo en la pizarra",
+  fillPage: "Llenar página",
+  fillPageTitle: "Hacer que este archivo llene la pizarra",
 };
 
 const VI: UiCopy = {
@@ -269,6 +281,10 @@ const VI: UiCopy = {
   createVisualTitle: "Tạo lời giải thích trực quan cho bài hiện tại",
   pauseExplanation: "Tạm dừng AI",
   resumeExplanation: "Tiếp tục AI",
+  centerPage: "Căn giữa",
+  centerPageTitle: "Đưa tài liệu này về giữa bảng",
+  fillPage: "Lấp đầy trang",
+  fillPageTitle: "Làm cho tài liệu này lấp đầy bảng",
 };
 
 const FIL: UiCopy = {
@@ -339,6 +355,10 @@ const FIL: UiCopy = {
   createVisualTitle: "Gumawa ng visual na paliwanag para sa kasalukuyang problema",
   pauseExplanation: "I-pause ang AI",
   resumeExplanation: "Ipagpatuloy ang AI",
+  centerPage: "Igitna",
+  centerPageTitle: "Ibalik ang file na ito sa gitna ng whiteboard",
+  fillPage: "Punuin ang pahina",
+  fillPageTitle: "Palakihin ang file na ito para punuin ang whiteboard",
 };
 
 const AR: UiCopy = {
@@ -409,6 +429,10 @@ const AR: UiCopy = {
   createVisualTitle: "أنشئ شرحاً بصرياً للمسألة الحالية",
   pauseExplanation: "إيقاف المعلم",
   resumeExplanation: "متابعة المعلم",
+  centerPage: "توسيط",
+  centerPageTitle: "أعد هذا الملف إلى منتصف اللوح",
+  fillPage: "ملء الصفحة",
+  fillPageTitle: "اجعل هذا الملف يملأ اللوح",
 };
 
 const FR: UiCopy = {
@@ -479,6 +503,10 @@ const FR: UiCopy = {
   createVisualTitle: "Créer une explication visuelle pour le problème actuel",
   pauseExplanation: "Pause IA",
   resumeExplanation: "Reprendre l’IA",
+  centerPage: "Centrer",
+  centerPageTitle: "Recentrer ce document sur le tableau",
+  fillPage: "Remplir la page",
+  fillPageTitle: "Faire en sorte que ce document remplisse le tableau",
 };
 
 const PT: UiCopy = {
@@ -549,6 +577,10 @@ const PT: UiCopy = {
   createVisualTitle: "Criar uma explicação visual para o problema atual",
   pauseExplanation: "Pausar IA",
   resumeExplanation: "Retomar IA",
+  centerPage: "Centralizar",
+  centerPageTitle: "Trazer este arquivo de volta ao centro do quadro",
+  fillPage: "Preencher página",
+  fillPageTitle: "Fazer este arquivo preencher o quadro",
 };
 
 const HI: UiCopy = {
@@ -619,6 +651,10 @@ const HI: UiCopy = {
   createVisualTitle: "मौजूदा प्रश्न के लिए दृश्य व्याख्या बनाएँ",
   pauseExplanation: "एआई रोकें",
   resumeExplanation: "एआई फिर चालू करें",
+  centerPage: "बीच में लाएँ",
+  centerPageTitle: "इस फ़ाइल को फिर से बीच में लाएँ",
+  fillPage: "पेज भरें",
+  fillPageTitle: "इस फ़ाइल को पूरे व्हाइटबोर्ड में भर दें",
 };
 
 const ZH: UiCopy = {
@@ -687,6 +723,10 @@ const ZH: UiCopy = {
   createVisualTitle: "为当前问题生成可视化讲解",
   pauseExplanation: "暂停 AI",
   resumeExplanation: "继续 AI",
+  centerPage: "居中",
+  centerPageTitle: "把这个文件重新移到白板中央",
+  fillPage: "铺满页面",
+  fillPageTitle: "让这个文件铺满整个白板",
 };
 
 const KO: UiCopy = {
@@ -757,6 +797,10 @@ const KO: UiCopy = {
   createVisualTitle: "현재 문제에 대한 시각 설명 만들기",
   pauseExplanation: "AI 일시정지",
   resumeExplanation: "AI 다시 시작",
+  centerPage: "가운데로",
+  centerPageTitle: "이 파일을 다시 화이트보드 중앙으로 이동",
+  fillPage: "페이지 채우기",
+  fillPageTitle: "이 파일이 화이트보드를 꽉 채우도록 보기",
 };
 
 const UI_COPY: Record<TutorLanguageCode, UiCopy> = {
