@@ -86,20 +86,6 @@ function buildAssetId(entryId: string, pageId: string, dataUrl: string) {
   return AssetRecordType.createId(getHashForString(`${entryId}:${pageId}:${dataUrl}`));
 }
 
-function getPrimaryShapeBounds(editor: Editor, shapeIds: TLShapeId[]) {
-  if (shapeIds.length === 0) return null;
-
-  const bounds = editor.getShapePageBounds(shapeIds[0]);
-  if (!bounds) return null;
-
-  return {
-    x: bounds.x,
-    y: bounds.y,
-    w: Math.max(1, bounds.w),
-    h: Math.max(1, bounds.h),
-  };
-}
-
 function getBoardPageLayout(
   viewport: ReturnType<Editor["getViewportPageBounds"]>,
   assetWidth: number,
@@ -125,8 +111,37 @@ function getBoardPageLayout(
   };
 }
 
+function getFocusedBoardPageBounds(editor: Editor, shapeIds: TLShapeId[]) {
+  const viewport = editor.getViewportPageBounds();
+  const viewportCenterX = viewport.midX;
+  const viewportCenterY = viewport.midY;
+  let closestBounds: { x: number; y: number; w: number; h: number } | null = null;
+  let closestDistance = Number.POSITIVE_INFINITY;
+
+  for (const shapeId of shapeIds) {
+    const bounds = editor.getShapePageBounds(shapeId);
+    if (!bounds) continue;
+
+    const dx = bounds.midX - viewportCenterX;
+    const dy = bounds.midY - viewportCenterY;
+    const distance = Math.hypot(dx, dy);
+
+    if (distance < closestDistance) {
+      closestDistance = distance;
+      closestBounds = {
+        x: bounds.x,
+        y: bounds.y,
+        w: Math.max(1, bounds.w),
+        h: Math.max(1, bounds.h),
+      };
+    }
+  }
+
+  return closestBounds;
+}
+
 function centerBoardMaterial(editor: Editor, shapeIds: TLShapeId[]) {
-  const bounds = getPrimaryShapeBounds(editor, shapeIds);
+  const bounds = getFocusedBoardPageBounds(editor, shapeIds);
   if (!bounds) return;
 
   editor.centerOnPoint(
@@ -138,48 +153,8 @@ function centerBoardMaterial(editor: Editor, shapeIds: TLShapeId[]) {
   );
 }
 
-function fitBoardMaterialPages(editor: Editor, inserted: InsertedBoardMaterial) {
-  const viewport = editor.getViewportPageBounds();
-  let nextY = viewport.minY + 88;
-  const updates: Array<Parameters<Editor["updateShapes"]>[0][number]> = [];
-
-  for (let index = 0; index < inserted.shapeIds.length; index += 1) {
-    const shapeId = inserted.shapeIds[index];
-    const assetId = inserted.assetIds[index];
-    const asset = editor.getAsset(assetId);
-    const imageProps = asset?.type === "image" ? asset.props : null;
-    const assetWidth = typeof imageProps?.w === "number" ? imageProps.w : 1;
-    const assetHeight = typeof imageProps?.h === "number" ? imageProps.h : 1;
-    const layout = getBoardPageLayout(viewport, assetWidth, assetHeight, nextY);
-
-    updates.push({
-      id: shapeId,
-      type: "image",
-      x: layout.x,
-      y: layout.y,
-      props: {
-        w: layout.w,
-        h: layout.h,
-      },
-    });
-
-    nextY += layout.h + 40;
-  }
-
-  if (updates.length === 0) return;
-
-  editor.run(
-    () => {
-      editor.updateShapes(updates);
-    },
-    { ignoreShapeLock: true }
-  );
-}
-
-function fillBoardMaterial(editor: Editor, inserted: InsertedBoardMaterial) {
-  fitBoardMaterialPages(editor, inserted);
-
-  const bounds = getPrimaryShapeBounds(editor, inserted.shapeIds);
+function fillBoardMaterial(editor: Editor, shapeIds: TLShapeId[]) {
+  const bounds = getFocusedBoardPageBounds(editor, shapeIds);
   if (!bounds) return;
 
   editor.zoomToBounds(bounds, {
@@ -504,7 +479,7 @@ export default function SessionWrapper({ initialCourseMaterial = "" }: SessionWr
     const inserted = insertedBoardMaterialsRef.current.get(entryId);
     if (!inserted || inserted.shapeIds.length === 0) return;
 
-    fillBoardMaterial(currentEditor, inserted);
+    fillBoardMaterial(currentEditor, inserted.shapeIds);
   }, []);
 
   const handleCenterBoardEntry = useCallback((entryId: string) => {
