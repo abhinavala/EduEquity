@@ -60,7 +60,6 @@ async function extractTextFromImage(groq: Groq, imageDataUrl: string) {
 async function extractEmbeddedTextFromPdf(base64: string) {
   const loadingTask = getDocument({
     data: Uint8Array.from(Buffer.from(base64, "base64")),
-    disableWorker: true,
     standardFontDataUrl,
   });
 

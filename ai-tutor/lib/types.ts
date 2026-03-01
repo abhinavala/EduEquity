@@ -20,3 +20,9 @@ export type SessionState = "idle" | "listening" | "processing" | "speaking";
 // listening  → mic open, capturing speech
 // processing → Groq API call in flight, canvas LOCKED
 // speaking   → ElevenLabs audio playing, canvas LOCKED
+
+export interface ConversationTurn {
+  role: "user" | "assistant";
+  content: string;
+  timestamp: number;
+}
