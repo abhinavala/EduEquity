@@ -1,10 +1,17 @@
 "use client";
 
-// Phase 1: goes directly to session with empty course material.
-// Phase 5 replaces this with SetupScreen → SessionWrapper.
+// Phase 5: Gate — SetupScreen (upload notes) → SessionWrapper (whiteboard with course material).
 
+import { useState } from "react";
+import SetupScreen from "@/components/SetupScreen";
 import SessionWrapper from "./session/SessionWrapper";
 
 export default function Home() {
-  return <SessionWrapper courseMaterial="" />;
+  const [courseMaterial, setCourseMaterial] = useState<string | null>(null);
+
+  if (courseMaterial === null) {
+    return <SetupScreen onStartSession={setCourseMaterial} />;
+  }
+
+  return <SessionWrapper courseMaterial={courseMaterial} />;
 }
