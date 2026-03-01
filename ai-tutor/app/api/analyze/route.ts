@@ -6,8 +6,10 @@ import { getTutorLanguage } from "@/lib/tutorLanguages";
 // Groq for main conversation (smart, follows instructions)
 const groq = process.env.GROQ_API_KEY ? new Groq({ apiKey: process.env.GROQ_API_KEY }) : null;
 const GROQ_MODEL = "llama-3.3-70b-versatile";
+// Only match EXPLICIT requests to draw/visualize something
+// Excludes: "show me if this is right", "can you show me the answer"
 const VISUAL_REQUEST_PATTERN =
-  /\b(show|draw|graph|plot|visuali[sz]e|diagram|illustrate|demonstrate|generate (?:an )?image|create (?:an )?(?:image|diagram|visual)|sketch|map out|watch the board|let me see)\b/i;
+  /\b(draw|graph|plot|visuali[sz]e|diagram|illustrate|sketch|map out)\s+(this|that|it|the|a|an|for me)/i;
 
 // Local vLLM models on AMD MI300X
 const LOCAL_MODEL_URL = process.env.LOCAL_MODEL_URL ?? "http://165.245.139.45:8000/v1";
@@ -102,20 +104,33 @@ Schema:
   } | null
 }
 
-TYPE RULES:
-- "annotation": A canvas image was provided AND student asked to check their work.
-  Find the specific error. Set annotation to the TIGHT bounding box of that error in the image (0–100, where 0,0 is top-left corner of the image).
-  The box must sit on the student's actual handwritten ink, symbol, number, or chosen answer, not on empty space around it.
-  If the student wrote a single answer such as "A", box only that letter.
-  Ignore toolbars, UI chrome, and empty margins.
-  x_pct = % from left edge to left side of the erroneous symbol/expression.
-  y_pct = % from top edge to top of the erroneous symbol/expression.
-  Add ~2% padding around the actual text for visual clarity.
-  annotation_label must name the exact target in 2-5 words.
-  speech_text must reference what's in the red box: "Look at the formula in the red box..."
-- "practice_problem": Student asked for a practice problem. Set practice_problem to full problem text. annotation must be null.
-- "visual_explanation": Student explicitly asks you to show, draw, graph, visualize, or demonstrate something on the whiteboard.
-  Use this only when a visual aid would be clearly helpful.
+CHOOSING THE RIGHT TYPE (in order of priority):
+
+1. "socratic_response" (DEFAULT - use this most of the time):
+   - Student asks a question about a concept
+   - Student asks for help understanding something
+   - Student asks "is this right?" or "check my work" but you DON'T see a specific error
+   - Student answers your previous question
+   - General conversation and tutoring
+   - When in doubt, use this type
+
+2. "annotation": ONLY when ALL of these are true:
+   - Student explicitly asks to check/verify their work ("check this", "is this right", "did I make a mistake")
+   - You can see their work in the canvas image
+   - You find a SPECIFIC error to highlight
+   - Set annotation to the bounding box of that error (0–100 coordinates)
+   - annotation_label names the exact target in 2-5 words
+   - speech_text references the red box: "Look at the formula in the red box..."
+
+3. "practice_problem": ONLY when student explicitly asks for a NEW problem:
+   - "give me a problem", "another problem", "practice problem"
+   - Put the FULL problem text in the practice_problem field
+   - DO NOT use this when student refers to existing problems ("problem 1", "the problem")
+
+4. "visual_explanation": ONLY when student explicitly asks to DRAW or GRAPH:
+   - "draw a diagram", "graph this function", "sketch the curve", "visualize this"
+   - Do NOT use for "show me if this is right" or "can you explain"
+   - Do NOT use when checking work - that's annotation
   Supported visual right now:
   - derivative / tangent / slope intuition for a quadratic such as f(x) = x²
   - integration by parts with highlighted u and dv selections and a staged formula build
@@ -143,12 +158,21 @@ function isFiniteNumber(value: unknown): value is number {
 }
 
 function looksLikeVisualRequest(transcript: string, conversationHistory: ConversationTurn[]) {
-  const latestContext = [
-    transcript,
-    ...conversationHistory.slice(-4).map((turn) => turn.content),
-  ].join("\n");
+  const currentTranscript = transcript.toLowerCase();
 
-  return VISUAL_REQUEST_PATTERN.test(latestContext);
+  // EXCLUDE: Checking work requests - these should NOT trigger visuals
+  if (/\b(check|correct|right|wrong|mistake|error|review|verify|is this|am i|did i)\b/i.test(currentTranscript)) {
+    return false;
+  }
+
+  // EXCLUDE: Explanation requests without visual keywords
+  if (/\b(explain|help me understand|what is|how do|why)\b/i.test(currentTranscript) &&
+      !/\b(draw|graph|plot|diagram|visualize|sketch)\b/i.test(currentTranscript)) {
+    return false;
+  }
+
+  // Only match explicit visual requests
+  return VISUAL_REQUEST_PATTERN.test(currentTranscript);
 }
 
 function normalizeConversationHistory(
@@ -708,6 +732,13 @@ function normalizeResponse(
       ? parsed.type
       : "socratic_response";
 
+  // Override: If user is checking work, don't use visual_explanation
+  const isCheckingWork = /\b(check|correct|right|wrong|mistake|error|review|verify|is this|am i|did i|look at)\b/i.test(transcript);
+  if (type === "visual_explanation" && isCheckingWork) {
+    console.log("Overriding visual_explanation to socratic_response (user is checking work)");
+    type = "socratic_response";
+  }
+
   let practice_problem =
     typeof parsed.practice_problem === "string" && parsed.practice_problem.trim()
       ? parsed.practice_problem.trim()
@@ -781,7 +812,9 @@ function normalizeResponse(
     visual_plan: normalizeVisualPlan(parsed.visual_plan),
   };
 
-  if (fallbackVisualPlan) {
+  // Only use fallback visual plan if user explicitly asked for visual AND not checking work
+  const explicitVisualRequest = /\b(draw|graph|plot|visualize|sketch|diagram)\b/i.test(transcript);
+  if (fallbackVisualPlan && explicitVisualRequest && !isCheckingWork) {
     response.type = "visual_explanation";
     response.annotation = null;
     response.annotation_label = null;
@@ -979,15 +1012,23 @@ export async function POST(request: NextRequest) {
 
     const normalized = normalizeResponse(parsed ?? {}, transcript, courseMaterial, normalizedConversation, rawLlmResponse);
     console.log("Normalized response:", JSON.stringify(normalized, null, 2));
+
+    // Only generate structured diagram if:
+    // 1. User EXPLICITLY asked for a visual (not just "show me if this is right")
+    // 2. Model said visual_explanation but didn't provide a plan
     const visualRequest = looksLikeVisualRequest(transcript, normalizedConversation);
     const usesBuiltInDemo =
       normalized.visual_plan?.kind === "parabola_tangent_demo" ||
       normalized.visual_plan?.kind === "integration_by_parts_demo";
+    const needsDiagramFallback =
+      visualRequest &&  // User explicitly asked for visual
+      normalized.type === "visual_explanation" &&  // Model agrees it's visual
+      !normalized.visual_plan &&  // But no plan provided
+      !usesBuiltInDemo;
 
-    if (
-      (normalized.type === "visual_explanation" || visualRequest) &&
-      (!normalized.visual_plan || (!usesBuiltInDemo && normalized.visual_plan.kind !== "structured_diagram"))
-    ) {
+    console.log("Visual request check:", { visualRequest, type: normalized.type, needsDiagramFallback });
+
+    if (needsDiagramFallback) {
       const structuredDiagram = await generateStructuredDiagramFallback(
         transcript,
         courseMaterial,
